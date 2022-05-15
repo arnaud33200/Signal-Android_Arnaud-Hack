@@ -68,6 +68,7 @@ sealed class NotificationBuilder(protected val context: Context) {
   abstract fun addMarkAsReadActionActual(state: NotificationStateV2)
   abstract fun setPriority(priority: Int)
   abstract fun setAlarms(recipient: Recipient?)
+  abstract fun setSilent(silent: Boolean)
   abstract fun setTicker(ticker: CharSequence?)
   abstract fun addTurnOffJoinedNotificationsAction(pendingIntent: PendingIntent)
   abstract fun setAutoCancel(autoCancel: Boolean)
@@ -324,6 +325,10 @@ sealed class NotificationBuilder(protected val context: Context) {
       if (vibrate == RecipientDatabase.VibrateState.ENABLED || vibrate == RecipientDatabase.VibrateState.DEFAULT && defaultVibrate) {
         builder.setDefaults(Notification.DEFAULT_VIBRATE)
       }
+    }
+
+    override fun setSilent(silent: Boolean) {
+      builder.setSilent(silent)
     }
 
     override fun setBubbleMetadataActual(conversation: NotificationConversation, bubbleState: BubbleUtil.BubbleState) {

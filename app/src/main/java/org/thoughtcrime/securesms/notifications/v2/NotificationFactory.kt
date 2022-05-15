@@ -32,6 +32,7 @@ import org.thoughtcrime.securesms.util.BubbleUtil
 import org.thoughtcrime.securesms.util.ConversationUtil
 import org.thoughtcrime.securesms.util.ServiceUtil
 import org.thoughtcrime.securesms.util.TextSecurePreferences
+import java.util.concurrent.TimeUnit
 
 private val TAG = Log.tag(NotificationFactory::class.java)
 
@@ -166,6 +167,9 @@ object NotificationFactory {
     return threadsThatNewlyAlerted
   }
 
+  private var lastNotificationSoundTimestamp = 0L
+  private val NOTIFICATION_SOUND_INTERVAL_MILLIS = TimeUnit.MINUTES.toMillis(1)
+
   private fun notifyForConversation(
     context: Context,
     conversation: NotificationConversation,
@@ -178,6 +182,14 @@ object NotificationFactory {
     }
 
     val builder: NotificationBuilder = NotificationBuilder.create(context)
+
+    val nowTimestamp = System.currentTimeMillis()
+    val elapsedTime: Long = nowTimestamp - lastNotificationSoundTimestamp
+
+    val silent = elapsedTime < NOTIFICATION_SOUND_INTERVAL_MILLIS
+    if (!silent) {
+      lastNotificationSoundTimestamp = nowTimestamp
+    }
 
     builder.apply {
       setSmallIcon(R.drawable.ic_notification)
@@ -206,6 +218,7 @@ object NotificationFactory {
       setAlarms(conversation.recipient)
       setTicker(conversation.mostRecentNotification.getStyledPrimaryText(context, true))
       setBubbleMetadata(conversation, if (targetThread == conversation.thread) defaultBubbleState else BubbleUtil.BubbleState.HIDDEN)
+      setSilent(silent)
     }
 
     if (conversation.isOnlyContactJoinedEvent) {
