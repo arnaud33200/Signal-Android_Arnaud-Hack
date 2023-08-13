@@ -68,6 +68,7 @@ public class BitmapUtil {
    * @deprecated You probably want to use {@link ImageCompressionUtil} instead, which has a clearer
    *             contract and handles mimetypes properly.
    */
+  @Deprecated
   @WorkerThread
   public static <T> ScaleResult createScaledBytes(@NonNull Context context,
                                                   @NonNull T model,
@@ -83,6 +84,7 @@ public class BitmapUtil {
    * @deprecated You probably want to use {@link ImageCompressionUtil} instead, which has a clearer
    *             contract and handles mimetypes properly.
    */
+  @Deprecated
   @WorkerThread
   public static <T> ScaleResult createScaledBytes(Context context,
                                                   T model,
@@ -272,7 +274,7 @@ public class BitmapUtil {
     return new Pair<>(options.outWidth, options.outHeight);
   }
 
-  public static InputStream toCompressedJpeg(Bitmap bitmap) {
+  public static ByteArrayInputStream toCompressedJpeg(Bitmap bitmap) {
     ByteArrayOutputStream thumbnailBytes = new ByteArrayOutputStream();
     bitmap.compress(CompressFormat.JPEG, 85, thumbnailBytes);
     return new ByteArrayInputStream(thumbnailBytes.toByteArray());

@@ -1,27 +1,43 @@
 package org.thoughtcrime.securesms.mediasend.v2
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.os.Parcel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import com.google.common.io.ByteStreams
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
+import io.reactivex.rxjava3.core.Flowable
 import io.reactivex.rxjava3.core.Maybe
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.disposables.CompositeDisposable
 import io.reactivex.rxjava3.disposables.Disposable
+import io.reactivex.rxjava3.kotlin.plusAssign
+import io.reactivex.rxjava3.kotlin.subscribeBy
+import io.reactivex.rxjava3.processors.BehaviorProcessor
+import io.reactivex.rxjava3.schedulers.Schedulers
+import io.reactivex.rxjava3.subjects.BehaviorSubject
 import io.reactivex.rxjava3.subjects.PublishSubject
-import org.thoughtcrime.securesms.TransportOption
+import io.reactivex.rxjava3.subjects.Subject
+import org.signal.core.util.BreakIteratorCompat
+import org.signal.core.util.getParcelableArrayListCompat
+import org.signal.core.util.getParcelableCompat
 import org.thoughtcrime.securesms.components.mention.MentionAnnotation
 import org.thoughtcrime.securesms.contacts.paged.ContactSearchKey
+import org.thoughtcrime.securesms.conversation.MessageSendType
+import org.thoughtcrime.securesms.conversation.MessageStyler
 import org.thoughtcrime.securesms.mediasend.Media
 import org.thoughtcrime.securesms.mediasend.MediaSendActivityResult
 import org.thoughtcrime.securesms.mediasend.VideoEditorFragment
+import org.thoughtcrime.securesms.mediasend.v2.review.AddMessageCharacterCount
 import org.thoughtcrime.securesms.mms.MediaConstraints
 import org.thoughtcrime.securesms.mms.SentMediaQuality
+import org.thoughtcrime.securesms.providers.BlobProvider
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.scribbles.ImageEditorFragment
-import org.thoughtcrime.securesms.sharing.MultiShareArgs
-import org.thoughtcrime.securesms.util.SingleLiveEvent
+import org.thoughtcrime.securesms.stories.Stories
 import org.thoughtcrime.securesms.util.Util
 import org.thoughtcrime.securesms.util.livedata.Store
 import java.util.Collections
@@ -31,21 +47,27 @@ import java.util.Collections
  */
 class MediaSelectionViewModel(
   val destination: MediaSelectionDestination,
-  transportOption: TransportOption,
+  sendType: MessageSendType,
   initialMedia: List<Media>,
   initialMessage: CharSequence?,
   val isReply: Boolean,
   isStory: Boolean,
-  private val repository: MediaSelectionRepository
+  val isAddToGroupStoryFlow: Boolean,
+  private val repository: MediaSelectionRepository,
+  private val identityChangesSince: Long = System.currentTimeMillis()
 ) : ViewModel() {
+
+  private val selectedMediaSubject: Subject<List<Media>> = BehaviorSubject.create()
 
   private val store: Store<MediaSelectionState> = Store(
     MediaSelectionState(
-      transportOption = transportOption,
+      sendType = sendType,
       message = initialMessage,
       isStory = isStory
     )
   )
+
+  private val addAMessageUpdatePublisher = BehaviorProcessor.create<CharSequence>()
 
   val isContactSelectionRequired = destination == MediaSelectionDestination.ChooseAfterMediaSelection
 
@@ -53,16 +75,32 @@ class MediaSelectionViewModel(
 
   private val internalHudCommands = PublishSubject.create<HudCommand>()
 
-  val mediaErrors: SingleLiveEvent<MediaValidator.FilterError> = SingleLiveEvent()
+  val mediaErrors: PublishSubject<MediaValidator.FilterError> = PublishSubject.create()
   val hudCommands: Observable<HudCommand> = internalHudCommands
 
   private val disposables = CompositeDisposable()
+
+  fun watchAddAMessageCount(): Flowable<AddMessageCharacterCount> {
+    return addAMessageUpdatePublisher
+      .onBackpressureLatest()
+      .map {
+        val iterator = BreakIteratorCompat.getInstance()
+        iterator.setText(it)
+        AddMessageCharacterCount(iterator.countBreaks())
+      }
+      .subscribeOn(Schedulers.io())
+      .observeOn(AndroidSchedulers.mainThread())
+  }
+
+  fun updateAddAMessageCount(input: CharSequence?) {
+    addAMessageUpdatePublisher.onNext(input ?: "")
+  }
 
   private val isMeteredDisposable: Disposable = repository.isMetered.subscribe { metered ->
     store.update {
       it.copy(
         isMeteredConnection = metered,
-        isPreUploadEnabled = shouldPreUpload(metered, it.transportOption.isSms, it.recipient)
+        isPreUploadEnabled = shouldPreUpload(metered, it.sendType.usesSmsTransport, it.recipient)
       )
     }
   }
@@ -75,13 +113,21 @@ class MediaSelectionViewModel(
       store.update(Recipient.live(recipientSearchKey.recipientId).liveData) { r, s ->
         s.copy(
           recipient = r,
-          isPreUploadEnabled = shouldPreUpload(s.isMeteredConnection, s.transportOption.isSms, r)
+          isPreUploadEnabled = shouldPreUpload(s.isMeteredConnection, s.sendType.usesSmsTransport, r)
         )
       }
     }
 
     if (initialMedia.isNotEmpty()) {
       addMedia(initialMedia)
+    }
+
+    disposables += selectedMediaSubject.map { media ->
+      Stories.MediaTransform.getSendRequirements(media)
+    }.subscribeBy { requirements ->
+      store.update {
+        it.copy(storySendRequirements = requirements)
+      }
     }
   }
 
@@ -102,12 +148,20 @@ class MediaSelectionViewModel(
     store.update { it.copy(isTouchEnabled = isEnabled) }
   }
 
+  fun setSuppressEmptyError(isSuppressed: Boolean) {
+    store.update { it.copy(suppressEmptyError = isSuppressed) }
+  }
+
   fun addMedia(media: Media) {
     addMedia(listOf(media))
   }
 
   fun isStory(): Boolean {
     return store.state.isStory
+  }
+
+  fun getStorySendRequirements(): Stories.MediaTransform.SendRequirements {
+    return store.state.storySendRequirements
   }
 
   private fun addMedia(media: List<Media>) {
@@ -128,12 +182,14 @@ class MediaSelectionViewModel(
               )
             }
 
+            selectedMediaSubject.onNext(filterResult.filteredMedia)
+
             val newMedia = filterResult.filteredMedia.toSet().intersect(media).toList()
             startUpload(newMedia)
           }
 
           if (filterResult.filterError != null) {
-            mediaErrors.postValue(filterResult.filterError)
+            mediaErrors.onNext(filterResult.filterError)
           }
         }
     )
@@ -186,10 +242,6 @@ class MediaSelectionViewModel(
   }
 
   fun removeMedia(media: Media) {
-    removeMedia(media, false)
-  }
-
-  private fun removeMedia(media: Media, suppressEmptyError: Boolean) {
     val snapshot = store.state
     val newMediaList = snapshot.selectedMedia - media
     val oldFocusIndex = snapshot.selectedMedia.indexOf(media)
@@ -208,10 +260,11 @@ class MediaSelectionViewModel(
       )
     }
 
-    if (newMediaList.isEmpty() && !suppressEmptyError) {
-      mediaErrors.postValue(MediaValidator.FilterError.NoItems())
+    if (newMediaList.isEmpty() && !store.state.suppressEmptyError) {
+      mediaErrors.onNext(MediaValidator.FilterError.NoItems())
     }
 
+    selectedMediaSubject.onNext(newMediaList)
     repository.deleteBlobs(listOf(media))
 
     cancelUpload(media)
@@ -227,7 +280,8 @@ class MediaSelectionViewModel(
   fun removeCameraFirstCapture() {
     val cameraFirstCapture: Media? = store.state.cameraFirstCapture
     if (cameraFirstCapture != null) {
-      removeMedia(cameraFirstCapture, true)
+      setSuppressEmptyError(true)
+      removeMedia(cameraFirstCapture)
     }
   }
 
@@ -246,8 +300,8 @@ class MediaSelectionViewModel(
   }
 
   fun getMediaConstraints(): MediaConstraints {
-    return if (store.state.transportOption.isSms) {
-      MediaConstraints.getMmsMediaConstraints(store.state.transportOption.simSubscriptionId.orElse(-1))
+    return if (store.state.sendType.usesSmsTransport) {
+      MediaConstraints.getMmsMediaConstraints(store.state.sendType.simSubscriptionId ?: -1)
     } else {
       MediaConstraints.getPushMediaConstraints()
     }
@@ -285,26 +339,34 @@ class MediaSelectionViewModel(
   }
 
   fun send(
-    selectedContacts: List<ContactSearchKey.RecipientSearchKey> = emptyList()
+    selectedContacts: List<ContactSearchKey.RecipientSearchKey> = emptyList(),
+    scheduledDate: Long? = null
+  ): Maybe<MediaSendActivityResult> = send(selectedContacts, scheduledDate ?: -1)
+
+  fun send(
+    selectedContacts: List<ContactSearchKey.RecipientSearchKey> = emptyList(),
+    scheduledDate: Long
   ): Maybe<MediaSendActivityResult> {
-    return UntrustedRecords.checkForBadIdentityRecords(selectedContacts.toSet()).andThen(
+    return UntrustedRecords.checkForBadIdentityRecords(selectedContacts.toSet(), identityChangesSince).andThen(
       repository.send(
-        store.state.selectedMedia,
-        store.state.editorStateMap,
-        store.state.quality,
-        store.state.message,
-        store.state.transportOption.isSms,
-        isViewOnceEnabled(),
-        destination.getRecipientSearchKey(),
-        selectedContacts.ifEmpty { destination.getRecipientSearchKeyList() },
-        MentionAnnotation.getMentionsFromAnnotations(store.state.message),
-        store.state.transportOption
+        selectedMedia = store.state.selectedMedia,
+        stateMap = store.state.editorStateMap,
+        quality = store.state.quality,
+        message = store.state.message,
+        isSms = store.state.sendType.usesSmsTransport,
+        isViewOnce = isViewOnceEnabled(),
+        singleContact = destination.getRecipientSearchKey(),
+        contacts = selectedContacts.ifEmpty { destination.getRecipientSearchKeyList() },
+        mentions = MentionAnnotation.getMentionsFromAnnotations(store.state.message),
+        bodyRanges = MessageStyler.getStyling(store.state.message),
+        sendType = store.state.sendType,
+        scheduledTime = scheduledDate
       )
     )
   }
 
   private fun isViewOnceEnabled(): Boolean {
-    return !store.state.transportOption.isSms &&
+    return !store.state.sendType.usesSmsTransport &&
       store.state.selectedMedia.size == 1 &&
       store.state.viewOnceToggleState == MediaSelectionState.ViewOnceToggleState.ONCE
   }
@@ -314,7 +376,13 @@ class MediaSelectionViewModel(
       return
     }
 
-    repository.uploadRepository.startUpload(media, store.state.recipient)
+    val filteredPreUploadMedia = if (destination is MediaSelectionDestination.SingleRecipient || !Stories.isFeatureEnabled()) {
+      media
+    } else {
+      media.filter { Stories.MediaTransform.canPreUploadMedia(it) }
+    }
+
+    repository.uploadRepository.startUpload(filteredPreUploadMedia, store.state.recipient)
   }
 
   private fun cancelUpload(media: Media) {
@@ -338,29 +406,54 @@ class MediaSelectionViewModel(
     outState.putParcelable(STATE_CAMERA_FIRST_CAPTURE, snapshot.cameraFirstCapture)
 
     val editorStates: List<Bundle> = store.state.editorStateMap.entries.map { it.toBundleStateEntry() }
-    outState.putParcelableArrayList(STATE_EDITORS, ArrayList(editorStates))
+    outState.putInt(STATE_EDITOR_COUNT, editorStates.size)
+    if (editorStates.isNotEmpty()) {
+      val parcel = Parcel.obtain()
+      editorStates.forEach { it.writeToParcel(parcel, 0) }
+      val serializedEditorState: ByteArray = parcel.marshall()
+      parcel.recycle()
+      val blobUri = BlobProvider.getInstance().forData(serializedEditorState).createForSingleUseInMemory()
+      outState.putParcelable(STATE_EDITORS, blobUri)
+    }
   }
 
   fun hasSelectedMedia(): Boolean {
     return store.state.selectedMedia.isNotEmpty()
   }
 
-  fun canShareSelectedMediaToStory(): Boolean {
-    return store.state.selectedMedia.all { MultiShareArgs.isValidStoryDuration(it) }
-  }
-
-  fun onRestoreState(savedInstanceState: Bundle) {
-    val selection: List<Media> = savedInstanceState.getParcelableArrayList(STATE_SELECTION) ?: emptyList()
-    val focused: Media? = savedInstanceState.getParcelable(STATE_FOCUSED)
+  fun onRestoreState(context: Context, savedInstanceState: Bundle) {
+    val selection: List<Media> = savedInstanceState.getParcelableArrayListCompat(STATE_SELECTION, Media::class.java) ?: emptyList()
+    val focused: Media? = savedInstanceState.getParcelableCompat(STATE_FOCUSED, Media::class.java)
     val quality: SentMediaQuality = SentMediaQuality.fromCode(savedInstanceState.getInt(STATE_QUALITY))
     val message: CharSequence? = savedInstanceState.getCharSequence(STATE_MESSAGE)
     val viewOnce: MediaSelectionState.ViewOnceToggleState = MediaSelectionState.ViewOnceToggleState.fromCode(savedInstanceState.getInt(STATE_VIEW_ONCE))
     val touchEnabled: Boolean = savedInstanceState.getBoolean(STATE_TOUCH_ENABLED)
     val sent: Boolean = savedInstanceState.getBoolean(STATE_SENT)
-    val cameraFirstCapture: Media? = savedInstanceState.getParcelable(STATE_CAMERA_FIRST_CAPTURE)
+    val cameraFirstCapture: Media? = savedInstanceState.getParcelableCompat(STATE_CAMERA_FIRST_CAPTURE, Media::class.java)
+    val editorCount: Int = savedInstanceState.getInt(STATE_EDITOR_COUNT, 0)
+    val blobUri: Uri? = savedInstanceState.getParcelableCompat(STATE_EDITORS, Uri::class.java)
 
-    val editorStates: List<Bundle> = savedInstanceState.getParcelableArrayList(STATE_EDITORS) ?: emptyList()
+    val editorStates: List<Bundle> = if (editorCount > 0 && blobUri != null) {
+      val accumulator: MutableList<Bundle> = mutableListOf<Bundle>()
+      val blobProvider: BlobProvider = BlobProvider.getInstance()
+      val blob: ByteArray = ByteStreams.toByteArray(blobProvider.getStream(context, blobUri))
+      val parcel: Parcel = Parcel.obtain()
+      parcel.unmarshall(blob, 0, blob.size)
+      parcel.setDataPosition(0)
+      for (index in 0 until editorCount) {
+        val bundle = parcel.readBundle(this::class.java.classLoader)
+        if (bundle != null && bundle != Bundle.EMPTY) {
+          accumulator.add(bundle)
+        }
+      }
+      parcel.recycle()
+      accumulator
+    } else {
+      emptyList()
+    }
     val editorStateMap = editorStates.associate { it.toAssociation() }
+
+    selectedMediaSubject.onNext(selection)
 
     store.update { state ->
       state.copy(
@@ -378,7 +471,7 @@ class MediaSelectionViewModel(
   }
 
   private fun Bundle.toAssociation(): Pair<Uri, Any> {
-    val key: Uri = requireNotNull(getParcelable(BUNDLE_URI))
+    val key: Uri = requireNotNull(getParcelableCompat(BUNDLE_URI, Uri::class.java))
 
     val value: Any = if (getBoolean(BUNDLE_IS_IMAGE)) {
       ImageEditorFragment.Data(this)
@@ -423,19 +516,21 @@ class MediaSelectionViewModel(
     private const val STATE_SENT = "$STATE_PREFIX.sent"
     private const val STATE_CAMERA_FIRST_CAPTURE = "$STATE_PREFIX.camera_first_capture"
     private const val STATE_EDITORS = "$STATE_PREFIX.editors"
+    private const val STATE_EDITOR_COUNT = "$STATE_PREFIX.editor_count"
   }
 
   class Factory(
     private val destination: MediaSelectionDestination,
-    private val transportOption: TransportOption,
+    private val sendType: MessageSendType,
     private val initialMedia: List<Media>,
     private val initialMessage: CharSequence?,
     private val isReply: Boolean,
     private val isStory: Boolean,
+    private val isAddToGroupStoryFlow: Boolean,
     private val repository: MediaSelectionRepository
   ) : ViewModelProvider.Factory {
-    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
-      return requireNotNull(modelClass.cast(MediaSelectionViewModel(destination, transportOption, initialMedia, initialMessage, isReply, isStory, repository)))
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+      return requireNotNull(modelClass.cast(MediaSelectionViewModel(destination, sendType, initialMedia, initialMessage, isReply, isStory, isAddToGroupStoryFlow, repository)))
     }
   }
 }

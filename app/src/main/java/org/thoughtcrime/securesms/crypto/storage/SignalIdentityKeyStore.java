@@ -6,11 +6,12 @@ import org.signal.libsignal.protocol.IdentityKey;
 import org.signal.libsignal.protocol.IdentityKeyPair;
 import org.signal.libsignal.protocol.SignalProtocolAddress;
 import org.signal.libsignal.protocol.state.IdentityKeyStore;
-import org.thoughtcrime.securesms.database.IdentityDatabase.VerifiedStatus;
+import org.thoughtcrime.securesms.database.IdentityTable.VerifiedStatus;
 import org.thoughtcrime.securesms.database.identity.IdentityRecordList;
 import org.thoughtcrime.securesms.database.model.IdentityRecord;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
+import org.whispersystems.signalservice.api.push.ServiceId;
 
 import java.util.List;
 import java.util.Optional;
@@ -50,13 +51,14 @@ public class SignalIdentityKeyStore implements IdentityKeyStore {
   }
 
   public void saveIdentityWithoutSideEffects(@NonNull RecipientId recipientId,
+                                             @NonNull ServiceId serviceId,
                                              IdentityKey identityKey,
                                              VerifiedStatus verifiedStatus,
                                              boolean firstUse,
                                              long timestamp,
                                              boolean nonBlockingApproval)
   {
-    baseStore.saveIdentityWithoutSideEffects(recipientId, identityKey, verifiedStatus, firstUse, timestamp, nonBlockingApproval);
+    baseStore.saveIdentityWithoutSideEffects(recipientId, serviceId, identityKey, verifiedStatus, firstUse, timestamp, nonBlockingApproval);
   }
 
   @Override

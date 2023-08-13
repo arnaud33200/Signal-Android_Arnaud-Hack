@@ -7,7 +7,9 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
+import androidx.core.app.ActivityCompat;
 import androidx.fragment.app.FragmentActivity;
+import androidx.fragment.app.FragmentManager;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 import androidx.lifecycle.Transformations;
@@ -21,7 +23,7 @@ import org.signal.libsignal.protocol.util.Pair;
 import org.thoughtcrime.securesms.BlockUnblockDialog;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.components.settings.conversation.ConversationSettingsActivity;
-import org.thoughtcrime.securesms.database.GroupDatabase;
+import org.thoughtcrime.securesms.database.GroupTable;
 import org.thoughtcrime.securesms.database.model.IdentityRecord;
 import org.thoughtcrime.securesms.database.model.StoryViewState;
 import org.thoughtcrime.securesms.groups.GroupId;
@@ -29,15 +31,17 @@ import org.thoughtcrime.securesms.groups.LiveGroup;
 import org.thoughtcrime.securesms.groups.ui.GroupChangeFailureReason;
 import org.thoughtcrime.securesms.groups.ui.GroupErrors;
 import org.thoughtcrime.securesms.groups.ui.addtogroup.AddToGroupsActivity;
+import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
 import org.thoughtcrime.securesms.recipients.RecipientUtil;
+import org.thoughtcrime.securesms.stories.StoryViewerArgs;
 import org.thoughtcrime.securesms.stories.viewer.StoryViewerActivity;
 import org.thoughtcrime.securesms.util.CommunicationActions;
+import org.thoughtcrime.securesms.util.TextSecurePreferences;
 import org.thoughtcrime.securesms.util.livedata.LiveDataUtil;
 import org.thoughtcrime.securesms.verify.VerifyIdentityActivity;
 
-import java.util.Collections;
 import java.util.Objects;
 
 import io.reactivex.rxjava3.disposables.CompositeDisposable;
@@ -54,16 +58,17 @@ final class RecipientDialogViewModel extends ViewModel {
   private final MutableLiveData<Boolean>        adminActionBusy;
   private final MutableLiveData<StoryViewState> storyViewState;
   private final CompositeDisposable             disposables;
-
+  private final boolean                         isDeprecatedOrUnregistered;
   private RecipientDialogViewModel(@NonNull Context context,
                                    @NonNull RecipientDialogRepository recipientDialogRepository)
   {
-    this.context                   = context;
-    this.recipientDialogRepository = recipientDialogRepository;
-    this.identity                  = new MutableLiveData<>();
-    this.adminActionBusy           = new MutableLiveData<>(false);
-    this.storyViewState            = new MutableLiveData<>();
-    this.disposables               = new CompositeDisposable();
+    this.context                    = context;
+    this.recipientDialogRepository  = recipientDialogRepository;
+    this.identity                   = new MutableLiveData<>();
+    this.adminActionBusy            = new MutableLiveData<>(false);
+    this.storyViewState             = new MutableLiveData<>();
+    this.disposables                = new CompositeDisposable();
+    this.isDeprecatedOrUnregistered = SignalStore.misc().isClientDeprecated() || TextSecurePreferences.isUnauthorizedReceived(context);
 
     boolean recipientIsSelf = recipientDialogRepository.getRecipientId().equals(Recipient.self().getId());
 
@@ -72,14 +77,14 @@ final class RecipientDialogViewModel extends ViewModel {
     if (recipientDialogRepository.getGroupId() != null && recipientDialogRepository.getGroupId().isV2() && !recipientIsSelf) {
       LiveGroup source = new LiveGroup(recipientDialogRepository.getGroupId());
 
-      LiveData<Pair<Boolean, Boolean>>    localStatus          = LiveDataUtil.combineLatest(source.isSelfAdmin(), Transformations.map(source.getGroupLink(), s -> s == null || s.isEnabled()), Pair::new);
-      LiveData<GroupDatabase.MemberLevel> recipientMemberLevel = Transformations.switchMap(recipient, source::getMemberLevel);
+      LiveData<Pair<Boolean, Boolean>> localStatus          = LiveDataUtil.combineLatest(source.isSelfAdmin(), Transformations.map(source.getGroupLink(), s -> s == null || s.isEnabled()), Pair::new);
+      LiveData<GroupTable.MemberLevel> recipientMemberLevel = Transformations.switchMap(recipient, source::getMemberLevel);
 
       adminActionStatus = LiveDataUtil.combineLatest(localStatus, recipientMemberLevel, (statuses, memberLevel) -> {
         boolean localAdmin     = statuses.first();
         boolean isLinkActive   = statuses.second();
         boolean inGroup        = memberLevel.isInGroup();
-        boolean recipientAdmin = memberLevel == GroupDatabase.MemberLevel.ADMINISTRATOR;
+        boolean recipientAdmin = memberLevel == GroupTable.MemberLevel.ADMINISTRATOR;
 
         return new AdminActionStatus(inGroup && localAdmin,
                                      inGroup && localAdmin && !recipientAdmin,
@@ -113,6 +118,10 @@ final class RecipientDialogViewModel extends ViewModel {
     disposables.clear();
   }
 
+  boolean isDeprecatedOrUnregistered() {
+    return isDeprecatedOrUnregistered;
+  }
+
   LiveData<StoryViewState> getStoryViewState() {
     return storyViewState;
   }
@@ -141,7 +150,11 @@ final class RecipientDialogViewModel extends ViewModel {
     if (storyViewState.getValue() == null || storyViewState.getValue() == StoryViewState.NONE) {
       onMessageClicked(activity);
     } else {
-      activity.startActivity(StoryViewerActivity.createIntent(activity, recipientDialogRepository.getRecipientId(), -1L, recipient.getValue().shouldHideStory(), null, null, null, Collections.emptyList()));
+      activity.startActivity(StoryViewerActivity.createIntent(
+          activity,
+          new StoryViewerArgs.Builder(recipientDialogRepository.getRecipientId(), recipient.getValue().shouldHideStory())
+                             .isFromQuote(true)
+                             .build()));
     }
   }
 
@@ -166,18 +179,22 @@ final class RecipientDialogViewModel extends ViewModel {
   }
 
   void onUnblockClicked(@NonNull FragmentActivity activity) {
-    recipientDialogRepository.getRecipient(recipient -> BlockUnblockDialog.showUnblockFor(activity, activity.getLifecycle(), recipient, () -> RecipientUtil.unblock(context, recipient)));
+    recipientDialogRepository.getRecipient(recipient -> BlockUnblockDialog.showUnblockFor(activity, activity.getLifecycle(), recipient, () -> RecipientUtil.unblock(recipient)));
   }
 
   void onViewSafetyNumberClicked(@NonNull Activity activity, @NonNull IdentityRecord identityRecord) {
-    activity.startActivity(VerifyIdentityActivity.newIntent(activity, identityRecord));
+    VerifyIdentityActivity.startOrShowExchangeMessagesDialog(activity, identityRecord);
   }
 
   void onAvatarClicked(@NonNull Activity activity) {
     if (storyViewState.getValue() == null || storyViewState.getValue() == StoryViewState.NONE) {
       activity.startActivity(ConversationSettingsActivity.forRecipient(activity, recipientDialogRepository.getRecipientId()));
     } else {
-      activity.startActivity(StoryViewerActivity.createIntent(activity, recipientDialogRepository.getRecipientId(), -1L, recipient.getValue().shouldHideStory(), null, null, null, Collections.emptyList()));
+      activity.startActivity(StoryViewerActivity.createIntent(
+          activity,
+          new StoryViewerArgs.Builder(recipientDialogRepository.getRecipientId(), recipient.getValue().shouldHideStory())
+                             .isFromQuote(true)
+                             .build()));
     }
   }
 

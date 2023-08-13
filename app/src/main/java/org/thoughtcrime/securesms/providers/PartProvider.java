@@ -21,26 +21,39 @@ import android.content.ContentValues;
 import android.content.UriMatcher;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.MemoryFile;
 import android.os.ParcelFileDescriptor;
+import android.os.ProxyFileDescriptorCallback;
+import android.os.storage.StorageManager;
+import android.system.ErrnoException;
+import android.system.OsConstants;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 
 import org.signal.core.util.StreamUtil;
+import org.signal.core.util.ThreadUtil;
 import org.signal.core.util.concurrent.SignalExecutors;
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.BuildConfig;
 import org.thoughtcrime.securesms.attachments.AttachmentId;
 import org.thoughtcrime.securesms.attachments.DatabaseAttachment;
+import org.thoughtcrime.securesms.database.AttachmentTable;
 import org.thoughtcrime.securesms.database.SignalDatabase;
 import org.thoughtcrime.securesms.mms.PartUriParser;
 import org.thoughtcrime.securesms.service.KeyCachingService;
+import org.thoughtcrime.securesms.util.MemoryFileUtil;
+import org.thoughtcrime.securesms.util.Util;
 
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Objects;
 
 public final class PartProvider extends BaseContentProvider {
 
@@ -78,11 +91,20 @@ public final class PartProvider extends BaseContentProvider {
       return null;
     }
 
+    if (SignalDatabase.getInstance() == null) {
+      Log.w(TAG, "SignalDatabase unavailable");
+      return null;
+    }
+
     if (uriMatcher.match(uri) == SINGLE_ROW) {
       Log.i(TAG, "Parting out a single row...");
       try {
         final PartUriParser partUri = new PartUriParser(uri);
-        return getParcelStreamForAttachment(partUri.getPartId());
+        if (Build.VERSION.SDK_INT >= 26) {
+          return getParcelStreamProxyForAttachment(partUri.getPartId());
+        } else {
+          return getParcelStreamForAttachment(partUri.getPartId());
+        }
       } catch (IOException ioe) {
         Log.w(TAG, ioe);
         throw new FileNotFoundException("Error opening file");
@@ -101,6 +123,11 @@ public final class PartProvider extends BaseContentProvider {
   @Override
   public String getType(@NonNull Uri uri) {
     Log.i(TAG, "getType() called: " + uri);
+
+    if (SignalDatabase.getInstance() == null) {
+      Log.w(TAG, "SignalDatabase unavailable");
+      return null;
+    }
 
     if (uriMatcher.match(uri) == SINGLE_ROW) {
       PartUriParser      partUriParser = new PartUriParser(uri);
@@ -124,6 +151,11 @@ public final class PartProvider extends BaseContentProvider {
   @Override
   public Cursor query(@NonNull Uri url, @Nullable String[] projection, String selection, String[] selectionArgs, String sortOrder) {
     Log.i(TAG, "query() called: " + url);
+
+    if (SignalDatabase.getInstance() == null) {
+      Log.w(TAG, "SignalDatabase unavailable");
+      return null;
+    }
 
     if (uriMatcher.match(url) == SINGLE_ROW) {
       PartUriParser      partUri    = new PartUriParser(url);
@@ -154,33 +186,96 @@ public final class PartProvider extends BaseContentProvider {
   }
 
   private ParcelFileDescriptor getParcelStreamForAttachment(AttachmentId attachmentId) throws IOException {
-    ParcelFileDescriptor[] reliablePipe = ParcelFileDescriptor.createReliablePipe();
+    long       plaintextLength = StreamUtil.getStreamLength(SignalDatabase.attachments().getAttachmentStream(attachmentId, 0));
+    MemoryFile memoryFile      = new MemoryFile(attachmentId.toString(), Util.toIntExact(plaintextLength));
 
-    SignalExecutors.BOUNDED_IO.execute(() -> {
-      Throwable error = null;
-      try (OutputStream out = new FileOutputStream(reliablePipe[1].getFileDescriptor())) {
-        try (InputStream in = SignalDatabase.attachments().getAttachmentStream(attachmentId, 0)) {
-          StreamUtil.copy(in, out);
-        } catch (IOException e) {
-          Log.w(TAG, "Error providing file", e);
-          error = e;
-        }
-      } catch (IOException e) {
-        Log.w(TAG, "Error opening pipe for writing", e);
-        error = e;
-      } finally {
-        try {
-          if (error != null) {
-            reliablePipe[1].closeWithError("Error writing file: " + error.getMessage());
-          } else {
-            reliablePipe[1].close();
-          }
-        } catch (IOException e2) {
-          Log.w(TAG, "Error closing pipe", e2);
-        }
+    InputStream  in  = SignalDatabase.attachments().getAttachmentStream(attachmentId, 0);
+    OutputStream out = memoryFile.getOutputStream();
+
+    StreamUtil.copy(in, out);
+    StreamUtil.close(out);
+    StreamUtil.close(in);
+
+    return MemoryFileUtil.getParcelFileDescriptor(memoryFile);
+  }
+
+  @RequiresApi(26)
+  private ParcelFileDescriptor getParcelStreamProxyForAttachment(AttachmentId attachmentId) throws IOException {
+    StorageManager storageManager = Objects.requireNonNull(getContext().getSystemService(StorageManager.class));
+    HandlerThread  thread         = SignalExecutors.getAndStartHandlerThread("storageservice-proxy", ThreadUtil.PRIORITY_IMPORTANT_BACKGROUND_THREAD);
+    Handler        handler        = new Handler(thread.getLooper());
+
+    ParcelFileDescriptor parcelFileDescriptor = storageManager.openProxyFileDescriptor(ParcelFileDescriptor.MODE_READ_ONLY,
+                                                                                       new ProxyCallback(SignalDatabase.attachments(), attachmentId, thread),
+                                                                                       handler);
+
+    Log.i(TAG, attachmentId + ":createdProxy");
+    return parcelFileDescriptor;
+  }
+
+  @RequiresApi(26)
+  private static final class ProxyCallback extends ProxyFileDescriptorCallback {
+
+    private AttachmentTable attachments;
+    private AttachmentId    attachmentId;
+    private HandlerThread   handlerThread;
+
+    public ProxyCallback(@NonNull AttachmentTable attachments, @NonNull AttachmentId attachmentId, @NonNull HandlerThread handlerThread) {
+      this.attachments   = attachments;
+      this.attachmentId  = attachmentId;
+      this.handlerThread = handlerThread;
+    }
+
+    @Override
+    public long onGetSize() throws ErrnoException {
+      DatabaseAttachment attachment = attachments.getAttachment(attachmentId);
+      if (attachment != null && attachment.getSize() > 0) {
+        Log.i(TAG, attachmentId + ":getSize");
+        return attachment.getSize();
+      } else {
+        Log.w(TAG, attachmentId + ":getSize:attachment is null or size is 0");
+        throw new ErrnoException("Attachment is invalid", OsConstants.ENOENT);
       }
-    });
+    }
 
-    return reliablePipe[0];
+    @Override
+    public int onRead(long offset, int size, byte[] data) throws ErrnoException {
+      try {
+        DatabaseAttachment attachment = attachments.getAttachment(attachmentId);
+        if (attachment == null || attachment.getSize() <= 0) {
+          Log.w(TAG, attachmentId + ":onRead:attachment is null or size is 0");
+          throw new ErrnoException("Attachment is invalid", OsConstants.ENOENT);
+        }
+
+        Log.i(TAG, attachmentId + ":onRead");
+        int totalRead = 0;
+        try (InputStream inputStream = attachments.getAttachmentStream(attachmentId, offset)) {
+          while (totalRead < size) {
+            int read = inputStream.read(data, totalRead, Math.max(0, size - totalRead));
+            if (read >= 0) {
+              totalRead += read;
+            } else {
+              break;
+            }
+          }
+        }
+        return totalRead;
+      } catch (IOException e) {
+        Log.w(TAG, attachmentId + ":onRead:attachment read failed", e);
+        throw new ErrnoException("Error reading", OsConstants.EIO, e);
+      }
+    }
+
+    @Override
+    public void onRelease() {
+      Log.i(TAG, attachmentId + ":onRelease");
+
+      attachments  = null;
+      attachmentId = null;
+      if (handlerThread != null) {
+        handlerThread.quitSafely();
+        handlerThread = null;
+      }
+    }
   }
 }

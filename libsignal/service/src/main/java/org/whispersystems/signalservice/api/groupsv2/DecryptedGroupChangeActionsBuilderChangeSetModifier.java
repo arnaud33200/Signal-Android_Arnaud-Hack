@@ -103,7 +103,7 @@ final class DecryptedGroupChangeActionsBuilderChangeSetModifier implements Chang
     result.removeNewRequestingMembers(i);
 
     DecryptedMember build = DecryptedMember.newBuilder()
-                                           .setUuid(addMemberAction.getUuid())
+                                           .setAciBytes(addMemberAction.getAciBytes())
                                            .setProfileKey(addMemberAction.getProfileKey())
                                            .setRole(Member.Role.DEFAULT).build();
 
@@ -141,6 +141,11 @@ final class DecryptedGroupChangeActionsBuilderChangeSetModifier implements Chang
   @Override
   public void removeDeleteBannedMembers(int i) {
     result.removeDeleteBannedMembers(i);
+  }
+
+  @Override
+  public void removePromotePendingPniAciMembers(int i) {
+    result.removePromotePendingPniAciMembers(i);
   }
 
   private static List<ByteString> removeIndexFromByteStringList(List<ByteString> byteStrings, int i) {

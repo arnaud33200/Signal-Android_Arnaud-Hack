@@ -13,8 +13,10 @@ import com.google.android.material.button.MaterialButton
 import org.signal.core.util.DimensionUnit
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.badges.BadgeImageView
+import org.thoughtcrime.securesms.badges.gifts.Gifts.formatExpiry
 import org.thoughtcrime.securesms.database.model.databaseprotos.GiftBadge
 import org.thoughtcrime.securesms.mms.GlideRequests
+import org.thoughtcrime.securesms.recipients.Recipient
 
 /**
  * Displays a gift badge sent to or received from a user, and allows the user to
@@ -48,16 +50,17 @@ class GiftMessageView @JvmOverloads constructor(
     }
   }
 
-  fun setGiftBadge(glideRequests: GlideRequests, giftBadge: GiftBadge, isOutgoing: Boolean, callback: Callback) {
-    titleView.setText(R.string.GiftMessageView__gift_badge)
-    descriptionView.text = resources.getQuantityString(R.plurals.GiftMessageView__lasts_for_d_months, 1, 1)
+  fun setGiftBadge(glideRequests: GlideRequests, giftBadge: GiftBadge, isOutgoing: Boolean, callback: Callback, fromRecipient: Recipient, toRecipient: Recipient) {
+    descriptionView.text = giftBadge.formatExpiry(context)
     actionView.icon = null
     actionView.setOnClickListener { callback.onViewGiftBadgeClicked() }
     actionView.isEnabled = true
 
     if (isOutgoing) {
       actionView.setText(R.string.GiftMessageView__view)
+      titleView.text = context.getString(R.string.GiftMessageView__donation_on_behalf_of_s, toRecipient.getDisplayName(context))
     } else {
+      titleView.text = context.getString(R.string.GiftMessageView__s_donated_to_signal_on, fromRecipient.getShortDisplayName(context))
       when (giftBadge.redemptionState) {
         GiftBadge.RedemptionState.REDEEMED -> {
           stopAnimationIfNeeded()

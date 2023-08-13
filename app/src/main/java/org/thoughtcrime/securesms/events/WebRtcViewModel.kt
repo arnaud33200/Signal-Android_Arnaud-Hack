@@ -5,8 +5,11 @@ import org.thoughtcrime.securesms.components.webrtc.BroadcastVideoSink
 import org.thoughtcrime.securesms.events.CallParticipant.Companion.createLocal
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.recipients.RecipientId
+import org.thoughtcrime.securesms.service.webrtc.CallLinkDisconnectReason
+import org.thoughtcrime.securesms.service.webrtc.PendingParticipantCollection
 import org.thoughtcrime.securesms.service.webrtc.state.WebRtcServiceState
 import org.thoughtcrime.securesms.webrtc.audio.SignalAudioManager
+import org.webrtc.PeerConnection
 
 class WebRtcViewModel(state: WebRtcServiceState) {
 
@@ -53,6 +56,7 @@ class WebRtcViewModel(state: WebRtcServiceState) {
     CONNECTING,
     RECONNECTING,
     CONNECTED,
+    CONNECTED_AND_PENDING,
     CONNECTED_AND_JOINING,
     CONNECTED_AND_JOINED;
 
@@ -65,7 +69,7 @@ class WebRtcViewModel(state: WebRtcServiceState) {
     val isConnected: Boolean
       get() {
         return when (this) {
-          CONNECTED, CONNECTED_AND_JOINING, CONNECTED_AND_JOINED -> true
+          CONNECTED, CONNECTED_AND_JOINING, CONNECTED_AND_JOINED, CONNECTED_AND_PENDING -> true
           else -> false
         }
       }
@@ -91,6 +95,10 @@ class WebRtcViewModel(state: WebRtcServiceState) {
   val identityChangedParticipants: Set<RecipientId> = state.callInfoState.identityChangedRecipients
   val remoteDevicesCount: OptionalLong = state.callInfoState.remoteDevicesCount
   val participantLimit: Long? = state.callInfoState.participantLimit
+  val pendingParticipants: PendingParticipantCollection = state.callInfoState.pendingParticipants
+  val isCallLink: Boolean = state.callInfoState.callRecipient.isCallLink
+  val callLinkDisconnectReason: CallLinkDisconnectReason? = state.callInfoState.callLinkDisconnectReason
+
   @get:JvmName("shouldRingGroup")
   val ringGroup: Boolean = state.getCallSetupState(state.callInfoState.activePeer?.callId).ringGroup
   val ringerRecipient: Recipient = state.getCallSetupState(state.callInfoState.activePeer?.callId).ringerRecipient
@@ -103,6 +111,20 @@ class WebRtcViewModel(state: WebRtcServiceState) {
     (if (state.videoState.localSink != null) state.videoState.localSink else BroadcastVideoSink())!!,
     state.localDeviceState.isMicrophoneEnabled
   )
+
+  val isCellularConnection: Boolean = when (state.localDeviceState.networkConnectionType) {
+    PeerConnection.AdapterType.UNKNOWN,
+    PeerConnection.AdapterType.ETHERNET,
+    PeerConnection.AdapterType.WIFI,
+    PeerConnection.AdapterType.VPN,
+    PeerConnection.AdapterType.LOOPBACK,
+    PeerConnection.AdapterType.ADAPTER_TYPE_ANY -> false
+    PeerConnection.AdapterType.CELLULAR,
+    PeerConnection.AdapterType.CELLULAR_2G,
+    PeerConnection.AdapterType.CELLULAR_3G,
+    PeerConnection.AdapterType.CELLULAR_4G,
+    PeerConnection.AdapterType.CELLULAR_5G -> true
+  }
 
   val isRemoteVideoEnabled: Boolean
     get() = remoteParticipants.any(CallParticipant::isVideoEnabled) || groupState.isNotIdle && remoteParticipants.size > 1

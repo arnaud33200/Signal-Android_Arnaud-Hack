@@ -16,17 +16,17 @@ import com.google.android.gms.common.api.Status;
 
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.R;
-import org.thoughtcrime.securesms.database.MessageDatabase;
-import org.thoughtcrime.securesms.database.MessageDatabase.InsertResult;
+import org.thoughtcrime.securesms.database.MessageTable;
+import org.thoughtcrime.securesms.database.MessageTable.InsertResult;
 import org.thoughtcrime.securesms.database.SignalDatabase;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
-import org.thoughtcrime.securesms.jobmanager.Data;
+import org.thoughtcrime.securesms.jobmanager.JsonJobData;
 import org.thoughtcrime.securesms.jobmanager.Job;
 import org.thoughtcrime.securesms.jobmanager.impl.SqlCipherMigrationConstraint;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.notifications.NotificationChannels;
 import org.thoughtcrime.securesms.notifications.NotificationIds;
-import org.thoughtcrime.securesms.notifications.v2.NotificationThread;
+import org.thoughtcrime.securesms.notifications.v2.ConversationId;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.service.VerificationCodeParser;
 import org.thoughtcrime.securesms.sms.IncomingTextMessage;
@@ -71,15 +71,15 @@ public class SmsReceiveJob extends BaseJob {
   }
 
   @Override
-  public @NonNull Data serialize() {
+  public @Nullable byte[] serialize() {
     String[] encoded = new String[pdus.length];
     for (int i = 0; i < pdus.length; i++) {
       encoded[i] = Base64.encodeBytes((byte[]) pdus[i]);
     }
 
-    return new Data.Builder().putStringArray(KEY_PDUS, encoded)
-                             .putInt(KEY_SUBSCRIPTION_ID, subscriptionId)
-                             .build();
+    return new JsonJobData.Builder().putStringArray(KEY_PDUS, encoded)
+                                    .putInt(KEY_SUBSCRIPTION_ID, subscriptionId)
+                                    .serialize();
   }
 
   @Override
@@ -118,13 +118,13 @@ public class SmsReceiveJob extends BaseJob {
       }
     }
 
-    if (message.isPresent() && SignalStore.account().getE164() != null && message.get().getSender().equals(Recipient.self().getId())) {
+    if (message.isPresent() && SignalStore.account().getE164() != null && message.get().getAuthorId().equals(Recipient.self().getId())) {
       Log.w(TAG, "Received an SMS from ourselves! Ignoring.");
     } else if (message.isPresent() && !isBlocked(message.get())) {
       Optional<InsertResult> insertResult = storeMessage(message.get());
 
       if (insertResult.isPresent()) {
-        ApplicationDependencies.getMessageNotifier().updateNotification(context, NotificationThread.forConversation(insertResult.get().getThreadId()));
+        ApplicationDependencies.getMessageNotifier().updateNotification(context, ConversationId.forConversation(insertResult.get().getThreadId()));
       }
     } else if (message.isPresent()) {
       Log.w(TAG, "Received an SMS from a blocked user. Ignoring.");
@@ -145,8 +145,8 @@ public class SmsReceiveJob extends BaseJob {
   }
 
   private boolean isBlocked(IncomingTextMessage message) {
-    if (message.getSender() != null) {
-      Recipient recipient = Recipient.resolved(message.getSender());
+    if (message.getAuthorId() != null) {
+      Recipient recipient = Recipient.resolved(message.getAuthorId());
       return recipient.isBlocked();
     }
 
@@ -154,7 +154,7 @@ public class SmsReceiveJob extends BaseJob {
   }
 
   private Optional<InsertResult> storeMessage(IncomingTextMessage message) throws MigrationPendingException {
-    MessageDatabase database = SignalDatabase.sms();
+    MessageTable database = SignalDatabase.messages();
     database.ensureMigration();
 
     if (TextSecurePreferences.getNeedsSqlCipherMigration(context)) {
@@ -193,9 +193,9 @@ public class SmsReceiveJob extends BaseJob {
   }
 
   private static Notification buildPreRegistrationNotification(@NonNull Context context, @NonNull IncomingTextMessage message) {
-    Recipient sender = Recipient.resolved(message.getSender());
+    Recipient sender = Recipient.resolved(message.getAuthorId());
 
-    return new NotificationCompat.Builder(context, NotificationChannels.getMessagesChannel(context))
+    return new NotificationCompat.Builder(context, NotificationChannels.getInstance().getMessagesChannel())
                                  .setStyle(new NotificationCompat.MessagingStyle(new Person.Builder()
                                                                  .setName(sender.getE164().orElse(""))
                                                                  .build())
@@ -219,7 +219,9 @@ public class SmsReceiveJob extends BaseJob {
 
   public static final class Factory implements Job.Factory<SmsReceiveJob> {
     @Override
-    public @NonNull SmsReceiveJob create(@NonNull Parameters parameters, @NonNull Data data) {
+    public @NonNull SmsReceiveJob create(@NonNull Parameters parameters, @Nullable byte[] serializedData) {
+      JsonJobData data = JsonJobData.deserialize(serializedData);
+
       try {
         int subscriptionId = data.getInt(KEY_SUBSCRIPTION_ID);
         String[] encoded   = data.getStringArray(KEY_PDUS);

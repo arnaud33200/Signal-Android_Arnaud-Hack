@@ -1,15 +1,15 @@
 package org.thoughtcrime.securesms.mediasend.v2.capture
 
-import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
-import androidx.lifecycle.LiveData
 import androidx.navigation.fragment.findNavController
 import app.cash.exhaustive.Exhaustive
+import io.reactivex.rxjava3.core.Flowable
+import org.signal.core.util.concurrent.LifecycleDisposable
 import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.mediasend.CameraFragment
@@ -21,7 +21,6 @@ import org.thoughtcrime.securesms.mediasend.v2.MediaSelectionViewModel
 import org.thoughtcrime.securesms.mms.MediaConstraints
 import org.thoughtcrime.securesms.permissions.Permissions
 import org.thoughtcrime.securesms.stories.Stories
-import org.thoughtcrime.securesms.util.LifecycleDisposable
 import org.thoughtcrime.securesms.util.navigation.safeNavigate
 import java.io.FileDescriptor
 import java.util.Optional
@@ -59,7 +58,7 @@ class MediaCaptureFragment : Fragment(R.layout.fragment_container), CameraFragme
       .replace(R.id.fragment_container, captureChildFragment as Fragment)
       .commitNowAllowingStateLoss()
 
-    viewModel.events.observe(viewLifecycleOwner) { event ->
+    lifecycleDisposable += viewModel.events.subscribe { event ->
       @Exhaustive
       when (event) {
         MediaCaptureEvent.MediaCaptureRenderFailed -> {
@@ -143,15 +142,6 @@ class MediaCaptureFragment : Fragment(R.layout.fragment_container), CameraFragme
     }
   }
 
-  override fun getDisplayRotation(): Int {
-    return if (Build.VERSION.SDK_INT >= 30) {
-      requireContext().display?.rotation ?: 0
-    } else {
-      @Suppress("DEPRECATION")
-      requireActivity().windowManager.defaultDisplay.rotation
-    }
-  }
-
   override fun onCameraCountButtonClicked() {
     val controller = findNavController()
     captureChildFragment.fadeOutControls {
@@ -159,7 +149,7 @@ class MediaCaptureFragment : Fragment(R.layout.fragment_container), CameraFragme
     }
   }
 
-  override fun getMostRecentMediaItem(): LiveData<Optional<Media>> {
+  override fun getMostRecentMediaItem(): Flowable<Optional<Media>> {
     return viewModel.getMostRecentMedia()
   }
 

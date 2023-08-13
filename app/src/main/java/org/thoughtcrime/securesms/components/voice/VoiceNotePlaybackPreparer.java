@@ -13,7 +13,6 @@ import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 
 import com.annimon.stream.Stream;
-import com.google.android.exoplayer2.ControlDispatcher;
 import com.google.android.exoplayer2.MediaItem;
 import com.google.android.exoplayer2.MediaMetadata;
 import com.google.android.exoplayer2.Player;
@@ -40,7 +39,7 @@ import java.util.stream.Collectors;
 /**
  * ExoPlayer Preparer for Voice Notes. This only supports ACTION_PLAY_FROM_URI
  */
-final class VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackPreparer {
+final class   VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackPreparer {
 
   private static final String   TAG      = Log.tag(VoiceNotePlaybackPreparer.class);
   private static final Executor EXECUTOR = Executors.newSingleThreadExecutor();
@@ -145,7 +144,7 @@ final class VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackP
   @MainThread
   private void applyDescriptionsToQueue(@NonNull List<MediaItem> mediaItems) {
     for (MediaItem mediaItem : mediaItems) {
-      MediaItem.PlaybackProperties playbackProperties = mediaItem.playbackProperties;
+      final MediaItem.LocalConfiguration playbackProperties = mediaItem.playbackProperties;
       if (playbackProperties == null) {
         continue;
       }
@@ -195,7 +194,7 @@ final class VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackP
 
   private int indexOfPlayerMediaItemByUri(@NonNull Uri uri) {
     for (int i = 0; i < player.getMediaItemCount(); i++) {
-      MediaItem.PlaybackProperties playbackProperties = player.getMediaItemAt(i).playbackProperties;
+      final MediaItem.LocalConfiguration playbackProperties = player.getMediaItemAt(i).playbackProperties;
       if (playbackProperties != null && playbackProperties.uri.equals(uri)) {
         return i;
       }
@@ -240,7 +239,7 @@ final class VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackP
 
   private @NonNull List<MediaItem> loadMediaItemsForSinglePlayback(long messageId) {
     try {
-      MessageRecord messageRecord = SignalDatabase.mms()
+      MessageRecord messageRecord = SignalDatabase.messages()
                                                   .getMessageRecord(messageId);
 
       if (!MessageRecordUtil.hasAudio(messageRecord)) {
@@ -268,8 +267,7 @@ final class VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackP
   @WorkerThread
   private @NonNull List<MediaItem> loadMediaItemsForConsecutivePlayback(long messageId) {
     try {
-      List<MessageRecord> recordsAfter = SignalDatabase.mmsSms()
-                                                        .getMessagesAfterVoiceNoteInclusive(messageId, LIMIT);
+      List<MessageRecord> recordsAfter = SignalDatabase.messages().getMessagesAfterVoiceNoteInclusive(messageId, LIMIT);
 
       return buildFilteredMessageRecordList(recordsAfter).stream()
                                                          .map(record -> VoiceNoteMediaItemFactory
@@ -291,7 +289,6 @@ final class VoiceNotePlaybackPreparer implements MediaSessionConnector.PlaybackP
   @SuppressWarnings("deprecation")
   @Override
   public boolean onCommand(@NonNull Player player,
-                           @NonNull ControlDispatcher controlDispatcher,
                            @NonNull String command,
                            @Nullable Bundle extras,
                            @Nullable ResultReceiver cb)

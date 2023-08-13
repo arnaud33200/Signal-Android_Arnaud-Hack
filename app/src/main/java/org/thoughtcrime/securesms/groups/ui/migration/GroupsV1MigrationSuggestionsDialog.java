@@ -7,7 +7,10 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.fragment.app.FragmentActivity;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
 import org.signal.core.util.concurrent.SignalExecutors;
+import org.signal.core.util.concurrent.SimpleTask;
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.database.SignalDatabase;
@@ -21,7 +24,6 @@ import org.thoughtcrime.securesms.groups.MembershipNotSuitableForV2Exception;
 import org.thoughtcrime.securesms.groups.ui.GroupMemberListView;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
-import org.signal.core.util.concurrent.SimpleTask;
 import org.thoughtcrime.securesms.util.views.SimpleProgressDialog;
 
 import java.io.IOException;
@@ -56,7 +58,7 @@ public final class GroupsV1MigrationSuggestionsDialog {
   }
 
   private void display() {
-    AlertDialog dialog = new AlertDialog.Builder(fragmentActivity)
+    AlertDialog dialog = new MaterialAlertDialogBuilder(fragmentActivity)
                                         .setTitle(fragmentActivity.getResources().getQuantityString(R.plurals.GroupsV1MigrationSuggestionsDialog_add_members_question, suggestions.size()))
                                         .setMessage(fragmentActivity.getResources().getQuantityString(R.plurals.GroupsV1MigrationSuggestionsDialog_these_members_couldnt_be_automatically_added, suggestions.size()))
                                         .setView(R.layout.dialog_group_members)
@@ -77,14 +79,14 @@ public final class GroupsV1MigrationSuggestionsDialog {
       try {
         GroupManager.addMembers(fragmentActivity, groupId.requirePush(), suggestions);
         Log.i(TAG, "Successfully added members! Removing these dropped members from the list.");
-        SignalDatabase.groups().removeUnmigratedV1Members(groupId, suggestions);
+        SignalDatabase.groups().removeUnmigratedV1Members(groupId);
         return Result.SUCCESS;
       } catch (IOException | GroupChangeBusyException e) {
         Log.w(TAG, "Temporary failure.", e);
         return Result.NETWORK_ERROR;
       } catch (GroupNotAMemberException | GroupInsufficientRightsException | MembershipNotSuitableForV2Exception | GroupChangeFailedException e) {
         Log.w(TAG, "Permanent failure! Removing these dropped members from the list.", e);
-        SignalDatabase.groups().removeUnmigratedV1Members(groupId, suggestions);
+        SignalDatabase.groups().removeUnmigratedV1Members(groupId);
         return Result.IMPOSSIBLE;
       }
     }, result -> {

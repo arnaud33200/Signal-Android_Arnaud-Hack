@@ -28,7 +28,7 @@ import org.thoughtcrime.securesms.components.settings.CustomizableSingleSelectSe
 import org.thoughtcrime.securesms.components.settings.SingleSelectSetting;
 import org.thoughtcrime.securesms.components.settings.app.wrapped.SettingsWrapperFragment;
 import org.thoughtcrime.securesms.database.SignalDatabase;
-import org.thoughtcrime.securesms.database.ThreadDatabase;
+import org.thoughtcrime.securesms.database.ThreadTable;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.keyvalue.KeepMessagesDuration;
 import org.thoughtcrime.securesms.keyvalue.SettingsValues;
@@ -276,7 +276,7 @@ public class StoragePreferenceFragment extends ListSummaryPreferenceFragment {
       if (newTrimLength > 0 && (!trimLengthEnabled || newTrimLength < trimLength)) {
         new MaterialAlertDialogBuilder(activity)
             .setTitle(R.string.preferences_storage__delete_older_messages)
-            .setMessage(activity.getString(R.string.preferences_storage__this_will_permanently_trim_all_conversations_to_the_d_most_recent_messages, NumberFormat.getInstance().format(newTrimLength)))
+            .setMessage(activity.getResources().getQuantityString(R.plurals.preferences_storage__this_will_permanently_trim_all_conversations_to_the_d_most_recent_messages, newTrimLength, newTrimLength))
             .setPositiveButton(R.string.delete, (d, w) -> updateTrimByLength(newTrimLength))
             .setNegativeButton(android.R.string.cancel, null)
             .show();
@@ -298,7 +298,7 @@ public class StoragePreferenceFragment extends ListSummaryPreferenceFragment {
         KeepMessagesDuration keepMessagesDuration = SignalStore.settings().getKeepMessagesDuration();
 
         long trimBeforeDate = keepMessagesDuration != KeepMessagesDuration.FOREVER ? System.currentTimeMillis() - keepMessagesDuration.getDuration()
-                                                                                   : ThreadDatabase.NO_TRIM_BEFORE_DATE_SET;
+                                                                                   : ThreadTable.NO_TRIM_BEFORE_DATE_SET;
 
         SignalExecutors.BOUNDED.execute(() -> SignalDatabase.threads().trimAllThreads(length, trimBeforeDate));
       }

@@ -15,7 +15,7 @@ import org.signal.libsignal.zkgroup.InvalidInputException;
 import org.signal.libsignal.zkgroup.groups.UuidCiphertext;
 import org.signal.storageservice.protos.groups.local.DecryptedGroup;
 import org.signal.storageservice.protos.groups.local.DecryptedPendingMember;
-import org.thoughtcrime.securesms.database.GroupDatabase;
+import org.thoughtcrime.securesms.database.GroupTable;
 import org.thoughtcrime.securesms.database.SignalDatabase;
 import org.thoughtcrime.securesms.groups.GroupChangeException;
 import org.thoughtcrime.securesms.groups.GroupId;
@@ -49,9 +49,9 @@ final class PendingMemberInvitesRepository {
 
   public void getInvitees(@NonNull Consumer<InviteeResult> onInviteesLoaded) {
     executor.execute(() -> {
-      GroupDatabase                                groupDatabase      = SignalDatabase.groups();
-      GroupDatabase.V2GroupProperties              v2GroupProperties  = groupDatabase.getGroup(groupId).get().requireV2GroupProperties();
-      DecryptedGroup                               decryptedGroup     = v2GroupProperties.getDecryptedGroup();
+      GroupTable                   groupDatabase     = SignalDatabase.groups();
+      GroupTable.V2GroupProperties v2GroupProperties = groupDatabase.getGroup(groupId).get().requireV2GroupProperties();
+      DecryptedGroup               decryptedGroup    = v2GroupProperties.getDecryptedGroup();
       List<DecryptedPendingMember>                 pendingMembersList = decryptedGroup.getPendingMembersList();
       List<SinglePendingMemberInvitedByYou>        byMe               = new ArrayList<>(pendingMembersList.size());
       List<MultiplePendingMembersInvitedByAnother> byOthers           = new ArrayList<>(pendingMembersList.size());
@@ -59,17 +59,17 @@ final class PendingMemberInvitesRepository {
       boolean                                      selfIsAdmin        = v2GroupProperties.isAdmin(Recipient.self());
 
       Stream.of(pendingMembersList)
-            .groupBy(DecryptedPendingMember::getAddedByUuid)
+            .groupBy(DecryptedPendingMember::getAddedByAci)
             .forEach(g ->
               {
-                ByteString                   inviterUuid    = g.getKey();
+                ByteString                   inviterAci     = g.getKey();
                 List<DecryptedPendingMember> invitedMembers = g.getValue();
 
-                if (self.equals(inviterUuid)) {
+                if (self.equals(inviterAci)) {
                   for (DecryptedPendingMember pendingMember : invitedMembers) {
                     try {
-                      Recipient      invitee        = GroupProtoUtil.pendingMemberToRecipient(context, pendingMember);
-                      UuidCiphertext uuidCipherText = new UuidCiphertext(pendingMember.getUuidCipherText().toByteArray());
+                      Recipient      invitee        = GroupProtoUtil.pendingMemberToRecipient(pendingMember);
+                      UuidCiphertext uuidCipherText = new UuidCiphertext(pendingMember.getServiceIdCipherText().toByteArray());
 
                       byMe.add(new SinglePendingMemberInvitedByYou(invitee, uuidCipherText));
                     } catch (InvalidInputException e) {
@@ -77,12 +77,12 @@ final class PendingMemberInvitesRepository {
                     }
                   }
                 } else {
-                  Recipient                 inviter         = GroupProtoUtil.uuidByteStringToRecipient(context, inviterUuid);
+                  Recipient                 inviter         = GroupProtoUtil.pendingMemberServiceIdToRecipient(inviterAci);
                   ArrayList<UuidCiphertext> uuidCipherTexts = new ArrayList<>(invitedMembers.size());
 
                   for (DecryptedPendingMember pendingMember : invitedMembers) {
                     try {
-                      uuidCipherTexts.add(new UuidCiphertext(pendingMember.getUuidCipherText().toByteArray()));
+                      uuidCipherTexts.add(new UuidCiphertext(pendingMember.getServiceIdCipherText().toByteArray()));
                     } catch (InvalidInputException e) {
                       Log.w(TAG, e);
                     }

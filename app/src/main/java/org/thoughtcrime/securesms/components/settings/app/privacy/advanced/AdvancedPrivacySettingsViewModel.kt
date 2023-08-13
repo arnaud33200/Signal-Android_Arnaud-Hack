@@ -77,7 +77,7 @@ class AdvancedPrivacySettingsViewModel(
   fun setCensorshipCircumventionEnabled(enabled: Boolean) {
     SignalStore.settings().setCensorshipCircumventionEnabled(enabled)
     SignalStore.misc().isServiceReachableWithoutCircumvention = false
-    ApplicationDependencies.resetNetworkConnectionsAfterProxyChange()
+    ApplicationDependencies.resetAllNetworkConnections()
     refresh()
   }
 
@@ -160,7 +160,7 @@ class AdvancedPrivacySettingsViewModel(
     private val sharedPreferences: SharedPreferences,
     private val repository: AdvancedPrivacySettingsRepository
   ) : ViewModelProvider.Factory {
-    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
       return requireNotNull(
         modelClass.cast(
           AdvancedPrivacySettingsViewModel(

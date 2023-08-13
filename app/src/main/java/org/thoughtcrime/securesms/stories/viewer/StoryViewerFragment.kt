@@ -1,22 +1,38 @@
 package org.thoughtcrime.securesms.stories.viewer
 
-import android.net.Uri
+import android.graphics.RenderEffect
+import android.graphics.Shader
+import android.os.Build
 import android.os.Bundle
 import android.view.View
+import androidx.core.app.ActivityCompat
+import androidx.core.view.ViewCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
-import androidx.lifecycle.LiveDataReactiveStreams
 import androidx.viewpager2.widget.ViewPager2
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
+import org.signal.core.util.concurrent.LifecycleDisposable
+import org.signal.core.util.getParcelableArrayListCompat
+import org.signal.core.util.getParcelableCompat
+import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.R
-import org.thoughtcrime.securesms.blurhash.BlurHash
+import org.thoughtcrime.securesms.components.spoiler.SpoilerAnnotation
+import org.thoughtcrime.securesms.keyvalue.SignalStore
+import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.recipients.RecipientId
-import org.thoughtcrime.securesms.stories.StoryTextPostModel
+import org.thoughtcrime.securesms.stories.StoryViewerArgs
+import org.thoughtcrime.securesms.stories.viewer.first.StoryFirstTimeNavigationFragment
+import org.thoughtcrime.securesms.stories.viewer.page.StoryViewerPageArgs
 import org.thoughtcrime.securesms.stories.viewer.page.StoryViewerPageFragment
+import org.thoughtcrime.securesms.stories.viewer.reply.StoriesSharedElementCrossFaderView
 
 /**
  * Fragment which manages a vertical pager fragment of stories.
  */
-class StoryViewerFragment : Fragment(R.layout.stories_viewer_fragment), StoryViewerPageFragment.Callback {
+class StoryViewerFragment :
+  Fragment(R.layout.stories_viewer_fragment),
+  StoryViewerPageFragment.Callback,
+  StoriesSharedElementCrossFaderView.Callback {
 
   private val onPageChanged = OnPageChanged()
 
@@ -24,55 +40,118 @@ class StoryViewerFragment : Fragment(R.layout.stories_viewer_fragment), StoryVie
 
   private val viewModel: StoryViewerViewModel by viewModels(
     factoryProducer = {
-      StoryViewerViewModel.Factory(storyRecipientId, onlyIncludeHiddenStories, storyThumbTextModel, storyThumbUri, storuThumbBlur, recipientIds, StoryViewerRepository())
+      StoryViewerViewModel.Factory(storyViewerArgs, StoryViewerRepository())
     }
   )
 
-  private val storyRecipientId: RecipientId
-    get() = requireArguments().getParcelable(ARG_START_RECIPIENT_ID)!!
+  private val lifecycleDisposable = LifecycleDisposable()
 
-  private val storyId: Long
-    get() = requireArguments().getLong(ARG_START_STORY_ID, -1L)
+  private val storyViewerArgs: StoryViewerArgs by lazy { requireArguments().getParcelableCompat(ARGS, StoryViewerArgs::class.java)!! }
 
-  private val onlyIncludeHiddenStories: Boolean
-    get() = requireArguments().getBoolean(ARG_HIDDEN_STORIES)
+  private lateinit var storyCrossfader: StoriesSharedElementCrossFaderView
 
-  private val storyThumbTextModel: StoryTextPostModel?
-    get() = requireArguments().getParcelable(ARG_CROSSFADE_TEXT_MODEL)
-
-  private val storyThumbUri: Uri?
-    get() = requireArguments().getParcelable(ARG_CROSSFADE_IMAGE_URI)
-
-  private val storuThumbBlur: BlurHash?
-    get() = requireArguments().getString(ARG_CROSSFADE_IMAGE_BLUR)?.let { BlurHash.parseOrNull(it) }
-
-  private val recipientIds: List<RecipientId>
-    get() = requireArguments().getParcelableArrayList(ARG_RECIPIENT_IDS)!!
+  private var pagerOnPageSelectedLock: Boolean = false
 
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+    storyCrossfader = view.findViewById(R.id.story_content_crossfader)
     storyPager = view.findViewById(R.id.story_item_pager)
 
-    val adapter = StoryViewerPagerAdapter(this, storyId)
-    storyPager.adapter = adapter
+    ViewCompat.setTransitionName(storyCrossfader, "story")
+    storyCrossfader.callback = this
 
-    viewModel.isChildScrolling.observe(viewLifecycleOwner) {
-      storyPager.isUserInputEnabled = !it
+    SpoilerAnnotation.resetRevealedSpoilers()
+
+    val adapter = StoryViewerPagerAdapter(
+      this,
+      StoryViewerPageArgs(
+        recipientId = Recipient.UNKNOWN.id,
+        initialStoryId = storyViewerArgs.storyId,
+        isJumpForwardToUnviewed = storyViewerArgs.isJumpToUnviewed,
+        isOutgoingOnly = storyViewerArgs.isFromMyStories,
+        source = when {
+          storyViewerArgs.isFromInfoContextMenuAction -> StoryViewerPageArgs.Source.INFO_CONTEXT
+          storyViewerArgs.isFromNotification -> StoryViewerPageArgs.Source.NOTIFICATION
+          else -> StoryViewerPageArgs.Source.UNKNOWN
+        },
+        groupReplyStartPosition = storyViewerArgs.groupReplyStartPosition
+      )
+    )
+
+    storyPager.adapter = adapter
+    storyPager.overScrollMode = ViewPager2.OVER_SCROLL_NEVER
+
+    lifecycleDisposable += viewModel.allowParentScrolling.observeOn(AndroidSchedulers.mainThread()).subscribe {
+      storyPager.isUserInputEnabled = it
     }
 
-    LiveDataReactiveStreams.fromPublisher(viewModel.state).observe(viewLifecycleOwner) { state ->
+    storyPager.offscreenPageLimit = 1
+
+    lifecycleDisposable.bindTo(viewLifecycleOwner)
+    lifecycleDisposable += viewModel.state.observeOn(AndroidSchedulers.mainThread()).subscribe { state ->
+      if (state.noPosts) {
+        ActivityCompat.finishAfterTransition(requireActivity())
+      }
+
       adapter.setPages(state.pages)
       if (state.pages.isNotEmpty() && storyPager.currentItem != state.page) {
+        pagerOnPageSelectedLock = true
+        storyPager.isUserInputEnabled = false
         storyPager.setCurrentItem(state.page, state.previousPage > -1)
+        pagerOnPageSelectedLock = false
 
         if (state.page >= state.pages.size) {
-          requireActivity().onBackPressed()
+          ActivityCompat.finishAfterTransition(requireActivity())
+          lifecycleDisposable.clear()
         }
       }
 
-      if (state.loadState.isReady()) {
+      when (state.crossfadeSource) {
+        is StoryViewerState.CrossfadeSource.TextModel -> storyCrossfader.setSourceView(state.crossfadeSource.storyTextPostModel)
+        is StoryViewerState.CrossfadeSource.ImageUri -> storyCrossfader.setSourceView(state.crossfadeSource.imageUri, state.crossfadeSource.imageBlur)
+        StoryViewerState.CrossfadeSource.None -> Unit
+      }
+
+      if (state.crossfadeTarget is StoryViewerState.CrossfadeTarget.Record) {
+        storyCrossfader.setTargetView(state.crossfadeTarget.messageRecord)
         requireActivity().supportStartPostponedEnterTransition()
       }
+
+      if (state.skipCrossfade) {
+        viewModel.setCrossfaderIsReady(true)
+      }
     }
+
+    lifecycleDisposable += viewModel.loadState.subscribe {
+      if (it.isReady()) {
+        Log.d(TAG, "Content is ready, clearing crossfader.")
+        storyCrossfader.alpha = 0f
+      }
+    }
+
+    if (savedInstanceState != null && savedInstanceState.containsKey(HIDDEN)) {
+      val ids: List<RecipientId> = savedInstanceState.getParcelableArrayListCompat(HIDDEN, RecipientId::class.java)!!
+      viewModel.addHiddenAndRefresh(ids.toSet())
+    } else {
+      viewModel.refresh()
+
+      if (!SignalStore.storyValues().userHasSeenFirstNavView) {
+        StoryFirstTimeNavigationFragment().show(childFragmentManager, null)
+      }
+    }
+
+    if (Build.VERSION.SDK_INT >= 31) {
+      lifecycleDisposable += viewModel.isFirstTimeNavigationShowing.subscribe {
+        if (it) {
+          requireView().rootView.setRenderEffect(RenderEffect.createBlurEffect(100f, 100f, Shader.TileMode.CLAMP))
+        } else {
+          requireView().rootView.setRenderEffect(null)
+        }
+      }
+    }
+  }
+
+  override fun onSaveInstanceState(outState: Bundle) {
+    outState.putParcelableArrayList(HIDDEN, ArrayList(viewModel.getHidden()))
   }
 
   override fun onResume() {
@@ -96,46 +175,50 @@ class StoryViewerFragment : Fragment(R.layout.stories_viewer_fragment), StoryVie
   }
 
   override fun onStoryHidden(recipientId: RecipientId) {
-    viewModel.onRecipientHidden()
+    viewModel.addHiddenAndRefresh(setOf(recipientId))
+  }
+
+  override fun onContentTranslation(x: Float, y: Float) {
+    storyCrossfader.translationX = x
+    storyCrossfader.translationY = y
+  }
+
+  override fun onReadyToAnimate() {
+  }
+
+  override fun onAnimationStarted() {
+    viewModel.setCrossfaderIsReady(false)
+  }
+
+  override fun onAnimationFinished() {
+    viewModel.setCrossfaderIsReady(true)
   }
 
   inner class OnPageChanged : ViewPager2.OnPageChangeCallback() {
     override fun onPageSelected(position: Int) {
-      viewModel.setSelectedPage(position)
+      if (!pagerOnPageSelectedLock) {
+        viewModel.setSelectedPage(position)
+      }
     }
 
     override fun onPageScrollStateChanged(state: Int) {
       viewModel.setIsScrolling(state == ViewPager2.SCROLL_STATE_DRAGGING)
+      if (state == ViewPager2.SCROLL_STATE_IDLE) {
+        storyPager.isUserInputEnabled = true
+      }
     }
   }
 
   companion object {
-    private const val ARG_START_RECIPIENT_ID = "start.recipient.id"
-    private const val ARG_START_STORY_ID = "start.story.id"
-    private const val ARG_HIDDEN_STORIES = "hidden_stories"
-    private const val ARG_CROSSFADE_TEXT_MODEL = "crossfade.text.model"
-    private const val ARG_CROSSFADE_IMAGE_URI = "crossfade.image.uri"
-    private const val ARG_CROSSFADE_IMAGE_BLUR = "crossfade.image.blur"
-    private const val ARG_RECIPIENT_IDS = "start.recipient.ids"
+    private val TAG = Log.tag(StoryViewerFragment::class.java)
 
-    fun create(
-      storyRecipientId: RecipientId,
-      storyId: Long,
-      onlyIncludeHiddenStories: Boolean,
-      storyThumbTextModel: StoryTextPostModel? = null,
-      storyThumbUri: Uri? = null,
-      storyThumbBlur: String? = null,
-      recipientIds: List<RecipientId> = emptyList()
-    ): Fragment {
+    private const val ARGS = "args"
+    private const val HIDDEN = "hidden"
+
+    fun create(storyViewerArgs: StoryViewerArgs): Fragment {
       return StoryViewerFragment().apply {
         arguments = Bundle().apply {
-          putParcelable(ARG_START_RECIPIENT_ID, storyRecipientId)
-          putLong(ARG_START_STORY_ID, storyId)
-          putBoolean(ARG_HIDDEN_STORIES, onlyIncludeHiddenStories)
-          putParcelable(ARG_CROSSFADE_TEXT_MODEL, storyThumbTextModel)
-          putParcelable(ARG_CROSSFADE_IMAGE_URI, storyThumbUri)
-          putString(ARG_CROSSFADE_IMAGE_BLUR, storyThumbBlur)
-          putParcelableArrayList(ARG_RECIPIENT_IDS, ArrayList(recipientIds))
+          putParcelable(ARGS, storyViewerArgs)
         }
       }
     }

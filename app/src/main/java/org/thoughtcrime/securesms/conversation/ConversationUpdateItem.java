@@ -13,7 +13,7 @@ import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.cardview.widget.CardView;
+import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.content.ContextCompat;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LiveData;
@@ -49,10 +49,9 @@ import org.thoughtcrime.securesms.util.Util;
 import org.thoughtcrime.securesms.util.ViewUtil;
 import org.thoughtcrime.securesms.util.concurrent.ListenableFuture;
 import org.thoughtcrime.securesms.util.livedata.LiveDataUtil;
-import org.thoughtcrime.securesms.util.views.AutoRounder;
-import org.thoughtcrime.securesms.util.views.Stub;
 import org.thoughtcrime.securesms.verify.VerifyIdentityActivity;
 import org.whispersystems.signalservice.api.push.ServiceId;
+import org.whispersystems.signalservice.api.push.ServiceId.ACI;
 
 import java.util.Collection;
 import java.util.Locale;
@@ -74,7 +73,6 @@ public final class ConversationUpdateItem extends FrameLayout
 
   private TextView                  body;
   private MaterialButton            actionButton;
-  private Stub<CardView>            donateButtonStub;
   private View                      background;
   private ConversationMessage       conversationMessage;
   private Recipient                 conversationRecipient;
@@ -103,10 +101,9 @@ public final class ConversationUpdateItem extends FrameLayout
   @Override
   public void onFinishInflate() {
     super.onFinishInflate();
-    this.body             = findViewById(R.id.conversation_update_body);
-    this.actionButton     = findViewById(R.id.conversation_update_action);
-    this.donateButtonStub = ViewUtil.findStubById(this, R.id.conversation_update_donate_action);
-    this.background       = findViewById(R.id.conversation_update_background);
+    this.body         = findViewById(R.id.conversation_update_body);
+    this.actionButton = findViewById(R.id.conversation_update_action);
+    this.background   = findViewById(R.id.conversation_update_background);
 
     body.setOnClickListener(v -> performClick());
     body.setOnLongClickListener(v -> performLongClick());
@@ -128,7 +125,8 @@ public final class ConversationUpdateItem extends FrameLayout
                    boolean hasWallpaper,
                    boolean isMessageRequestAccepted,
                    boolean allowedToPlayInline,
-                   @NonNull Colorizer colorizer)
+                   @NonNull Colorizer colorizer,
+                   @NonNull ConversationItemDisplayMode displayMode)
   {
     this.batchSelected = batchSelected;
 
@@ -160,10 +158,10 @@ public final class ConversationUpdateItem extends FrameLayout
     this.conversationRecipient    = conversationRecipient;
     this.isMessageRequestAccepted = isMessageRequestAccepted;
 
-    senderObserver.observe(lifecycleOwner, messageRecord.getIndividualRecipient());
+    senderObserver.observe(lifecycleOwner, messageRecord.getFromRecipient());
 
     if (conversationRecipient.isActiveGroup() &&
-        (messageRecord.isGroupCall() || messageRecord.isCollapsedGroupV2JoinUpdate() || messageRecord.isGroupV2JoinRequest(messageRecord.getIndividualRecipient().getServiceId().orElse(null)))) {
+        (messageRecord.isGroupCall() || messageRecord.isCollapsedGroupV2JoinUpdate() || messageRecord.isGroupV2JoinRequest(messageRecord.getFromRecipient().getServiceId().orElse(null)))) {
       groupObserver.observe(lifecycleOwner, conversationRecipient);
       groupData.observe(lifecycleOwner, conversationRecipient);
     } else {
@@ -173,14 +171,6 @@ public final class ConversationUpdateItem extends FrameLayout
     int textColor = ContextCompat.getColor(getContext(), R.color.conversation_item_update_text_color);
     if (ThemeUtil.isDarkTheme(getContext()) && hasWallpaper) {
       textColor = ContextCompat.getColor(getContext(), R.color.core_grey_15);
-    }
-
-    if (!ThemeUtil.isDarkTheme(getContext())) {
-      if (hasWallpaper) {
-        actionButton.setStrokeColor(ColorStateList.valueOf(getResources().getColor(R.color.core_grey_45)));
-      } else {
-        actionButton.setStrokeColor(ColorStateList.valueOf(getResources().getColor(R.color.signal_button_secondary_stroke)));
-      }
     }
 
     UpdateDescription         updateDescription = Objects.requireNonNull(messageRecord.getUpdateDisplayBody(getContext(), eventListener::onRecipientNameClicked));
@@ -194,6 +184,8 @@ public final class ConversationUpdateItem extends FrameLayout
     presentBackground(shouldCollapse(messageRecord, previousMessageRecord),
                       shouldCollapse(messageRecord, nextMessageRecord),
                       hasWallpaper);
+
+    presentActionButton(hasWallpaper, conversationMessage.getMessageRecord().isBoostRequest());
 
     updateSelectedState();
   }
@@ -263,6 +255,11 @@ public final class ConversationUpdateItem extends FrameLayout
     return background;
   }
 
+  @Override
+  public @NonNull ViewGroup getRoot() {
+    return this;
+  }
+
   static final class RecipientObserverManager {
 
     private final Observer<Recipient> recipientObserver;
@@ -295,11 +292,11 @@ public final class ConversationUpdateItem extends FrameLayout
 
     private final Observer<Object> updater;
 
-    private LiveGroup           liveGroup;
-    private LiveData<Boolean>   liveIsSelfAdmin;
-    private LiveData<Set<UUID>> liveBannedMembers;
-    private LiveData<Set<UUID>> liveFullMembers;
-    private Recipient           conversationRecipient;
+    private LiveGroup                liveGroup;
+    private LiveData<Boolean>        liveIsSelfAdmin;
+    private LiveData<Set<ServiceId>> liveBannedMembers;
+    private LiveData<Set<UUID>>      liveFullMembers;
+    private Recipient                conversationRecipient;
 
     GroupDataManager() {
       this.updater = unused -> update();
@@ -319,7 +316,7 @@ public final class ConversationUpdateItem extends FrameLayout
         liveBannedMembers     = liveGroup.getBannedMembers();
         liveFullMembers       = Transformations.map(liveGroup.getFullMembers(),
                                                     members -> members.stream()
-                                                                      .map(m -> m.getMember().requireServiceId().uuid())
+                                                                      .map(m -> m.getMember().requireAci().getRawUuid())
                                                                       .collect(Collectors.toSet()));
 
         liveIsSelfAdmin.observe(lifecycleOwner, updater);
@@ -345,9 +342,9 @@ public final class ConversationUpdateItem extends FrameLayout
         return false;
       }
 
-      Set<UUID> bannedMembers = liveBannedMembers.getValue();
+      Set<ServiceId> bannedMembers = liveBannedMembers.getValue();
       if (bannedMembers != null) {
-        return recipient.getServiceId().isPresent() && bannedMembers.contains(recipient.requireServiceId().uuid());
+        return recipient.getServiceId().isPresent() && bannedMembers.contains(recipient.requireServiceId());
       }
       return false;
     }
@@ -359,7 +356,7 @@ public final class ConversationUpdateItem extends FrameLayout
 
       Set<UUID> members = liveFullMembers.getValue();
       if (members != null) {
-        return recipient.getServiceId().isPresent() && members.contains(recipient.requireServiceId().uuid());
+        return recipient.hasAci() && members.contains(recipient.requireAci().getRawUuid());
       }
       return false;
     }
@@ -446,16 +443,16 @@ public final class ConversationUpdateItem extends FrameLayout
       actionButton.setVisibility(VISIBLE);
       actionButton.setOnClickListener(v -> {
         if (batchSelected.isEmpty() && eventListener != null) {
-          eventListener.onSafetyNumberLearnMoreClicked(conversationMessage.getMessageRecord().getIndividualRecipient());
+          eventListener.onSafetyNumberLearnMoreClicked(conversationMessage.getMessageRecord().getFromRecipient());
         }
       });
     } else if (conversationMessage.getMessageRecord().isGroupCall()) {
-      UpdateDescription     updateDescription = MessageRecord.getGroupCallUpdateDescription(getContext(), conversationMessage.getMessageRecord().getBody(), true);
-      Collection<ServiceId> sids              = updateDescription.getMentioned();
+      UpdateDescription updateDescription = MessageRecord.getGroupCallUpdateDescription(getContext(), conversationMessage.getMessageRecord().getBody(), true);
+      Collection<ACI>   acis              = updateDescription.getMentioned();
 
       int text = 0;
-      if (Util.hasItems(sids)) {
-        if (sids.contains(SignalStore.account().requireAci())) {
+      if (Util.hasItems(acis)) {
+        if (acis.contains(SignalStore.account().requireAci())) {
           text = R.string.ConversationUpdateItem_return_to_call;
         } else if (GroupCallUpdateDetailsUtil.parse(conversationMessage.getMessageRecord().getBody()).getIsCallFull()) {
           text = R.string.ConversationUpdateItem_call_is_full;
@@ -516,15 +513,15 @@ public final class ConversationUpdateItem extends FrameLayout
       actionButton.setVisibility(VISIBLE);
       actionButton.setOnClickListener(v -> {
         if (batchSelected.isEmpty() && eventListener != null) {
-          eventListener.onBadDecryptLearnMoreClicked(conversationMessage.getMessageRecord().getRecipient().getId());
+          eventListener.onBadDecryptLearnMoreClicked(conversationMessage.getMessageRecord().getFromRecipient().getId());
         }
       });
-    } else if (conversationMessage.getMessageRecord().isChangeNumber() && conversationMessage.getMessageRecord().getIndividualRecipient().isSystemContact()) {
+    } else if (conversationMessage.getMessageRecord().isChangeNumber() && conversationMessage.getMessageRecord().getFromRecipient().isSystemContact()) {
       actionButton.setText(R.string.ConversationUpdateItem_update_contact);
       actionButton.setVisibility(VISIBLE);
       actionButton.setOnClickListener(v -> {
         if (batchSelected.isEmpty() && eventListener != null) {
-          eventListener.onChangeNumberUpdateContact(conversationMessage.getMessageRecord().getIndividualRecipient());
+          eventListener.onChangeNumberUpdateContact(conversationMessage.getMessageRecord().getFromRecipient());
         }
       });
     } else if (shouldShowBlockRequestAction(conversationMessage.getMessageRecord())) {
@@ -532,45 +529,51 @@ public final class ConversationUpdateItem extends FrameLayout
       actionButton.setVisibility(VISIBLE);
       actionButton.setOnClickListener(v -> {
         if (batchSelected.isEmpty() && eventListener != null) {
-          eventListener.onBlockJoinRequest(conversationMessage.getMessageRecord().getIndividualRecipient());
+          eventListener.onBlockJoinRequest(conversationMessage.getMessageRecord().getFromRecipient());
         }
       });
-    } else {
-      actionButton.setVisibility(GONE);
-      actionButton.setOnClickListener(null);
-    }
-
-    if (conversationMessage.getMessageRecord().isBoostRequest()) {
-      actionButton.setVisibility(GONE);
-
-      CardView donateButton = donateButtonStub.get();
-      TextView buttonText   = donateButton.findViewById(R.id.conversation_update_donate_action_button);
-      boolean  isSustainer  = SignalStore.donationsValues().isLikelyASustainer();
-
-      donateButton.setVisibility(VISIBLE);
-      donateButton.setOnClickListener(v -> {
+    } else if (conversationMessage.getMessageRecord().isBoostRequest()) {
+      actionButton.setVisibility(VISIBLE);
+      actionButton.setOnClickListener(v -> {
         if (batchSelected.isEmpty() && eventListener != null) {
           eventListener.onDonateClicked();
         }
       });
 
-      if (isSustainer) {
-        buttonText.setText(R.string.ConversationUpdateItem_signal_boost);
-        buttonText.setCompoundDrawablesRelativeWithIntrinsicBounds(R.drawable.ic_boost_outline_16, 0, 0, 0);
-      } else {
-        buttonText.setText(R.string.ConversationUpdateItem_become_a_sustainer);
-        buttonText.setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, 0, 0);
-      }
+      actionButton.setText(R.string.ConversationUpdateItem_donate);
+    } else if (conversationMessage.getMessageRecord().isSmsExportType()) {
+      actionButton.setVisibility(View.VISIBLE);
+      actionButton.setOnClickListener(v -> {
+        if (batchSelected.isEmpty() && eventListener != null) {
+          eventListener.onInviteToSignalClicked();
+        }
+      });
 
-      AutoRounder.autoSetCorners(donateButton, donateButton::setRadius);
-
-    } else if (donateButtonStub.resolved()) {
-      donateButtonStub.get().setVisibility(GONE);
+      actionButton.setText(R.string.ConversationActivity__invite_to_signal);
+    } else if (conversationMessage.getMessageRecord().isPaymentsRequestToActivate() && !conversationMessage.getMessageRecord().isOutgoing() && !SignalStore.paymentsValues().mobileCoinPaymentsEnabled()) {
+      actionButton.setText(R.string.ConversationUpdateItem_activate_payments);
+      actionButton.setVisibility(VISIBLE);
+      actionButton.setOnClickListener(v -> {
+        if (batchSelected.isEmpty() && eventListener != null) {
+          eventListener.onActivatePaymentsClicked();
+        }
+      });
+    } else if (conversationMessage.getMessageRecord().isPaymentsActivated() && !conversationMessage.getMessageRecord().isOutgoing()) {
+      actionButton.setText(R.string.ConversationUpdateItem_send_payment);
+      actionButton.setVisibility(VISIBLE);
+      actionButton.setOnClickListener(v -> {
+        if (batchSelected.isEmpty() && eventListener != null) {
+          eventListener.onSendPaymentClicked(conversationMessage.getMessageRecord().getFromRecipient().getId());
+        }
+      });
+    } else{
+      actionButton.setVisibility(GONE);
+      actionButton.setOnClickListener(null);
     }
   }
 
   private boolean shouldShowBlockRequestAction(MessageRecord messageRecord) {
-    Recipient toBlock = messageRecord.getIndividualRecipient();
+    Recipient toBlock = messageRecord.getFromRecipient();
 
     if (!toBlock.hasServiceId() || !groupData.isSelfAdmin() || groupData.isBanned(toBlock) || groupData.isFullMember(toBlock)) {
       return false;
@@ -642,6 +645,19 @@ public final class ConversationUpdateItem extends FrameLayout
       } else {
         background.setBackground(null);
       }
+    }
+  }
+
+  private void presentActionButton(boolean hasWallpaper, boolean isBoostRequest) {
+    if (isBoostRequest) {
+      actionButton.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(getContext(), R.color.signal_colorSecondaryContainer)));
+      actionButton.setTextColor(ColorStateList.valueOf(ContextCompat.getColor(getContext(), R.color.signal_colorOnSecondaryContainer)));
+    } else if (hasWallpaper) {
+      actionButton.setBackgroundTintList(AppCompatResources.getColorStateList(getContext(), R.color.conversation_update_item_button_background_wallpaper));
+      actionButton.setTextColor(AppCompatResources.getColorStateList(getContext(), R.color.conversation_update_item_button_text_color_wallpaper));
+    } else {
+      actionButton.setBackgroundTintList(AppCompatResources.getColorStateList(getContext(), R.color.conversation_update_item_button_background_normal));
+      actionButton.setTextColor(AppCompatResources.getColorStateList(getContext(), R.color.conversation_update_item_button_text_color_normal));
     }
   }
 

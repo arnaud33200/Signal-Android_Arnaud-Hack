@@ -8,7 +8,6 @@ import androidx.annotation.Px;
 import androidx.annotation.StringRes;
 
 import org.thoughtcrime.securesms.R;
-import org.thoughtcrime.securesms.util.FeatureFlags;
 import org.thoughtcrime.securesms.webrtc.audio.SignalAudioManager;
 
 import java.util.Set;
@@ -28,7 +27,8 @@ public final class WebRtcControls {
                                                                null,
                                                                FoldableState.flat(),
                                                                SignalAudioManager.AudioDevice.NONE,
-                                                               emptySet());
+                                                               emptySet(),
+                                                               false);
 
   private final boolean                             isRemoteVideoEnabled;
   private final boolean                             isLocalVideoEnabled;
@@ -41,6 +41,7 @@ public final class WebRtcControls {
   private final FoldableState                       foldableState;
   private final SignalAudioManager.AudioDevice      activeDevice;
   private final Set<SignalAudioManager.AudioDevice> availableDevices;
+  private final boolean                             isCallLink;
 
   private WebRtcControls() {
     this(false,
@@ -53,7 +54,8 @@ public final class WebRtcControls {
          null,
          FoldableState.flat(),
          SignalAudioManager.AudioDevice.NONE,
-         emptySet());
+         emptySet(),
+         false);
   }
 
   WebRtcControls(boolean isLocalVideoEnabled,
@@ -66,7 +68,8 @@ public final class WebRtcControls {
                  @Nullable Long participantLimit,
                  @NonNull FoldableState foldableState,
                  @NonNull SignalAudioManager.AudioDevice activeDevice,
-                 @NonNull Set<SignalAudioManager.AudioDevice> availableDevices)
+                 @NonNull Set<SignalAudioManager.AudioDevice> availableDevices,
+                 boolean isCallLink)
   {
     this.isLocalVideoEnabled          = isLocalVideoEnabled;
     this.isRemoteVideoEnabled         = isRemoteVideoEnabled;
@@ -79,6 +82,7 @@ public final class WebRtcControls {
     this.foldableState                = foldableState;
     this.activeDevice                 = activeDevice;
     this.availableDevices             = availableDevices;
+    this.isCallLink                   = isCallLink;
   }
 
   public @NonNull WebRtcControls withFoldableState(FoldableState foldableState) {
@@ -92,7 +96,8 @@ public final class WebRtcControls {
                               participantLimit,
                               foldableState,
                               activeDevice,
-                              availableDevices);
+                              availableDevices,
+                              isCallLink);
   }
 
   boolean displayErrorControls() {
@@ -154,7 +159,7 @@ public final class WebRtcControls {
   }
 
   boolean displayAudioToggle() {
-    return (isPreJoin() || isAtLeastOutgoing()) && (!isLocalVideoEnabled || enableHeadsetInAudioToggle());
+    return (isPreJoin() || isAtLeastOutgoing()) && (!isLocalVideoEnabled || isBluetoothHeadsetAvailableForAudioToggle() || isWiredHeadsetAvailableForAudioToggle());
   }
 
   boolean displayCameraToggle() {
@@ -173,12 +178,16 @@ public final class WebRtcControls {
     return isIncoming();
   }
 
-  boolean enableHandsetInAudioToggle() {
+  boolean isEarpieceAvailableForAudioToggle() {
     return !isLocalVideoEnabled;
   }
 
-  boolean enableHeadsetInAudioToggle() {
+  boolean isBluetoothHeadsetAvailableForAudioToggle() {
     return availableDevices.contains(SignalAudioManager.AudioDevice.BLUETOOTH);
+  }
+
+  boolean isWiredHeadsetAvailableForAudioToggle() {
+    return availableDevices.contains(SignalAudioManager.AudioDevice.WIRED_HEADSET);
   }
 
   boolean isFadeOutEnabled() {
@@ -202,7 +211,9 @@ public final class WebRtcControls {
       case SPEAKER_PHONE:
         return WebRtcAudioOutput.SPEAKER;
       case BLUETOOTH:
-        return WebRtcAudioOutput.HEADSET;
+        return WebRtcAudioOutput.BLUETOOTH_HEADSET;
+      case WIRED_HEADSET:
+        return WebRtcAudioOutput.WIRED_HEADSET;
       default:
         return WebRtcAudioOutput.HANDSET;
     }
@@ -217,7 +228,7 @@ public final class WebRtcControls {
   }
 
   boolean displayRingToggle() {
-    return FeatureFlags.groupCallRinging() && isPreJoin() && isGroupCall() && !hasAtLeastOneRemote;
+    return isPreJoin() && isGroupCall() && !isCallLink && !hasAtLeastOneRemote;
   }
 
   private boolean isError() {

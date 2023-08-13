@@ -7,8 +7,8 @@ import androidx.annotation.Nullable;
 
 import org.thoughtcrime.securesms.audio.AudioHash;
 import org.thoughtcrime.securesms.blurhash.BlurHash;
-import org.thoughtcrime.securesms.database.AttachmentDatabase;
-import org.thoughtcrime.securesms.database.AttachmentDatabase.TransformProperties;
+import org.thoughtcrime.securesms.database.AttachmentTable;
+import org.thoughtcrime.securesms.database.AttachmentTable.TransformProperties;
 import org.thoughtcrime.securesms.stickers.StickerLocator;
 
 public abstract class Attachment {
@@ -34,6 +34,9 @@ public abstract class Attachment {
 
   @Nullable
   private final byte[] digest;
+
+  @Nullable
+  private final byte[] incrementalDigest;
 
   @Nullable
   private final String fastPreflightId;
@@ -70,6 +73,7 @@ public abstract class Attachment {
                     @Nullable String key,
                     @Nullable String relay,
                     @Nullable byte[] digest,
+                    @Nullable byte[] incrementalDigest,
                     @Nullable String fastPreflightId,
                     boolean voiceNote,
                     boolean borderless,
@@ -93,6 +97,7 @@ public abstract class Attachment {
     this.key                 = key;
     this.relay               = relay;
     this.digest              = digest;
+    this.incrementalDigest   = incrementalDigest;
     this.fastPreflightId     = fastPreflightId;
     this.voiceNote           = voiceNote;
     this.borderless          = borderless;
@@ -118,8 +123,13 @@ public abstract class Attachment {
   }
 
   public boolean isInProgress() {
-    return transferState != AttachmentDatabase.TRANSFER_PROGRESS_DONE &&
-           transferState != AttachmentDatabase.TRANSFER_PROGRESS_FAILED;
+    return transferState != AttachmentTable.TRANSFER_PROGRESS_DONE &&
+           transferState != AttachmentTable.TRANSFER_PROGRESS_FAILED &&
+           transferState != AttachmentTable.TRANSFER_PROGRESS_PERMANENT_FAILURE;
+  }
+
+  public boolean isPermanentlyFailed() {
+    return transferState == AttachmentTable.TRANSFER_PROGRESS_PERMANENT_FAILURE;
   }
 
   public long getSize() {
@@ -158,6 +168,11 @@ public abstract class Attachment {
   @Nullable
   public byte[] getDigest() {
     return digest;
+  }
+
+  @Nullable
+  public byte[] getIncrementalDigest() {
+    return incrementalDigest;
   }
 
   @Nullable

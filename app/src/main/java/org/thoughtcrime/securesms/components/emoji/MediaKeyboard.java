@@ -50,6 +50,26 @@ public class MediaKeyboard extends FrameLayout implements InputView {
     }
   }
 
+  @Override
+  protected void onAttachedToWindow() {
+    super.onAttachedToWindow();
+    if (isInitialised && fragmentManager != null && keyboardPagerFragment != null) {
+      fragmentManager.beginTransaction()
+                     .replace(R.id.media_keyboard_fragment_container, keyboardPagerFragment, TAG)
+                     .commitNowAllowingStateLoss();
+    }
+  }
+
+  @Override
+  protected void onDetachedFromWindow() {
+    super.onDetachedFromWindow();
+    if (fragmentManager != null && keyboardPagerFragment != null) {
+      fragmentManager.beginTransaction()
+                     .remove(keyboardPagerFragment)
+                     .commitNowAllowingStateLoss();
+    }
+  }
+
   public void setFragmentManager(@NonNull FragmentManager fragmentManager) {
     this.fragmentManager = fragmentManager;
   }
@@ -85,7 +105,6 @@ public class MediaKeyboard extends FrameLayout implements InputView {
     if (!isInitialised) initView();
 
     setVisibility(VISIBLE);
-    if (keyboardListener != null) keyboardListener.onShown();
     keyboardPagerFragment.show();
   }
 
@@ -93,7 +112,6 @@ public class MediaKeyboard extends FrameLayout implements InputView {
   public void hide(boolean immediate) {
     setVisibility(GONE);
     onCloseEmojiSearchInternal(false);
-    if (keyboardListener != null) keyboardListener.onHidden();
     Log.i(TAG, "hide()");
     keyboardPagerFragment.hide();
   }
@@ -152,6 +170,7 @@ public class MediaKeyboard extends FrameLayout implements InputView {
 
   private void initView() {
     if (!isInitialised) {
+      Log.d(TAG, "Initialising...");
 
       LayoutInflater.from(getContext()).inflate(R.layout.media_keyboard, this, true);
 
@@ -166,7 +185,7 @@ public class MediaKeyboard extends FrameLayout implements InputView {
       }
 
       fragmentManager.beginTransaction()
-                     .replace(R.id.media_keyboard_fragment_container, keyboardPagerFragment)
+                     .replace(R.id.media_keyboard_fragment_container, keyboardPagerFragment, TAG)
                      .commitNowAllowingStateLoss();
 
       keyboardState         = State.NORMAL;

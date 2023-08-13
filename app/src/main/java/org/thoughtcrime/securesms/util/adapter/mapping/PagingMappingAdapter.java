@@ -33,11 +33,45 @@ public class PagingMappingAdapter<Key> extends MappingAdapter {
   }
 
   @Override
-  protected @Nullable MappingModel<?> getItem(int position) {
+  public @Nullable MappingModel<?> getItem(int position) {
     if (pagingController != null) {
       pagingController.onDataNeededAroundIndex(position);
     }
-    return super.getItem(position);
+
+    if (position >= 0 && position < super.getCurrentList().size()) {
+      return super.getItem(position);
+    } else {
+      return null;
+    }
+  }
+
+  public boolean isAvailableAround(int position) {
+    int start = position - 10;
+    int end   = position + 10;
+
+    if (isRangeAvailable(start, end)) {
+      return true;
+    } else {
+      getItem(position);
+      return false;
+    }
+  }
+
+  protected final boolean isRangeAvailable(int start, int end) {
+    if (end <= start || start >= getItemCount() || end <= 0) {
+      return false;
+    }
+
+    int clampedStart = Math.max(0, start);
+    int clampedEnd   = Math.min(getItemCount(), end);
+
+    for (int i = clampedStart; i < clampedEnd; i++) {
+      if (super.getItem(i) == null) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   @Override
@@ -59,7 +93,7 @@ public class PagingMappingAdapter<Key> extends MappingAdapter {
     return getItem(position) != null;
   }
 
-  private static class Placeholder implements MappingModel<Placeholder> {
+  protected static class Placeholder implements MappingModel<Placeholder> {
     @Override
     public boolean areItemsTheSame(@NonNull Placeholder newItem) {
       return false;

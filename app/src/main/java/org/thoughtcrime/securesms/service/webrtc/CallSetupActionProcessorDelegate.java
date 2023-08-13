@@ -37,6 +37,12 @@ public class CallSetupActionProcessorDelegate extends WebRtcActionProcessor {
 
     RemotePeer activePeer = currentState.getCallInfoState().requireActivePeer();
 
+    webRtcInteractor.sendAcceptedCallEventSyncMessage(
+      activePeer,
+      currentState.getCallInfoState().getCallState() == WebRtcViewModel.State.CALL_RINGING,
+      currentState.getCallSetupState(activePeer).isAcceptWithVideo() || currentState.getLocalDeviceState().getCameraState().isEnabled()
+    );
+
     ApplicationDependencies.getAppForegroundObserver().removeListener(webRtcInteractor.getForegroundListener());
     webRtcInteractor.startAudioCommunication();
     webRtcInteractor.activateCall(activePeer.getId());
@@ -58,12 +64,13 @@ public class CallSetupActionProcessorDelegate extends WebRtcActionProcessor {
                                .changeLocalDeviceState()
                                .build();
 
-    webRtcInteractor.setCallInProgressNotification(TYPE_ESTABLISHED, activePeer);
+    boolean isRemoteVideoOffer = currentState.getCallSetupState(activePeer).isRemoteVideoOffer();
+
+    webRtcInteractor.setCallInProgressNotification(TYPE_ESTABLISHED, activePeer, isRemoteVideoOffer);
     webRtcInteractor.unregisterPowerButtonReceiver();
 
     try {
       CallManager callManager = webRtcInteractor.getCallManager();
-      callManager.setCommunicationMode();
       callManager.setAudioEnable(currentState.getLocalDeviceState().isMicrophoneEnabled());
       callManager.setVideoEnable(currentState.getLocalDeviceState().getCameraState().isEnabled());
     } catch (CallException e) {

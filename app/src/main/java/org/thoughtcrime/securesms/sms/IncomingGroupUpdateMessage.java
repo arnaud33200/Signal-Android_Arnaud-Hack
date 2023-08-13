@@ -4,6 +4,8 @@ import com.google.protobuf.ByteString;
 
 import org.thoughtcrime.securesms.database.model.databaseprotos.DecryptedGroupV2Context;
 import org.thoughtcrime.securesms.mms.MessageGroupContext;
+import org.whispersystems.signalservice.api.push.ServiceId;
+import org.whispersystems.signalservice.api.push.ServiceId.ACI;
 
 import java.util.Optional;
 
@@ -12,10 +14,6 @@ import static org.whispersystems.signalservice.internal.push.SignalServiceProtos
 public final class IncomingGroupUpdateMessage extends IncomingTextMessage {
 
   private final MessageGroupContext groupContext;
-
-  public IncomingGroupUpdateMessage(IncomingTextMessage base, GroupContext groupContext, String body) {
-    this(base, new MessageGroupContext(groupContext));
-  }
 
   public IncomingGroupUpdateMessage(IncomingTextMessage base, DecryptedGroupV2Context groupV2Context) {
     this(base, new MessageGroupContext(groupV2Context));
@@ -56,7 +54,7 @@ public final class IncomingGroupUpdateMessage extends IncomingTextMessage {
     return GroupV2UpdateMessageUtil.getChangeRevision(groupContext);
   }
 
-  public Optional<ByteString> getChangeEditor() {
+  public Optional<ServiceId> getChangeEditor() {
     return GroupV2UpdateMessageUtil.getChangeEditor(groupContext);
   }
 }

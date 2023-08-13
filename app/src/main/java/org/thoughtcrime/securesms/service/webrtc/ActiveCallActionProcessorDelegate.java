@@ -116,24 +116,25 @@ public class ActiveCallActionProcessorDelegate extends WebRtcActionProcessor {
 
   @Override
   protected @NonNull WebRtcServiceState handleReceivedOfferWhileActive(@NonNull WebRtcServiceState currentState, @NonNull RemotePeer remotePeer) {
-    RemotePeer activePeer = currentState.getCallInfoState().requireActivePeer();
+    RemotePeer activePeer         = currentState.getCallInfoState().requireActivePeer();
+    boolean    isRemoteVideoOffer = currentState.getCallSetupState(activePeer).isRemoteVideoOffer();
 
     Log.i(tag, "handleReceivedOfferWhileActive(): call_id: " + remotePeer.getCallId());
 
     switch (activePeer.getState()) {
       case DIALING:
       case REMOTE_RINGING:
-        webRtcInteractor.setCallInProgressNotification(TYPE_OUTGOING_RINGING, activePeer);
+        webRtcInteractor.setCallInProgressNotification(TYPE_OUTGOING_RINGING, activePeer, isRemoteVideoOffer);
         break;
       case IDLE:
       case ANSWERING:
-        webRtcInteractor.setCallInProgressNotification(TYPE_INCOMING_CONNECTING, activePeer);
+        webRtcInteractor.setCallInProgressNotification(TYPE_INCOMING_CONNECTING, activePeer, isRemoteVideoOffer);
         break;
       case LOCAL_RINGING:
-        webRtcInteractor.setCallInProgressNotification(TYPE_INCOMING_RINGING, activePeer);
+        webRtcInteractor.setCallInProgressNotification(TYPE_INCOMING_RINGING, activePeer, isRemoteVideoOffer);
         break;
       case CONNECTED:
-        webRtcInteractor.setCallInProgressNotification(TYPE_ESTABLISHED, activePeer);
+        webRtcInteractor.setCallInProgressNotification(TYPE_ESTABLISHED, activePeer, isRemoteVideoOffer);
         break;
       default:
         throw new IllegalStateException();
@@ -165,7 +166,7 @@ public class ActiveCallActionProcessorDelegate extends WebRtcActionProcessor {
       state = Objects.requireNonNull(ENDED_REMOTE_EVENT_TO_STATE.get(endedRemoteEvent));
     }
 
-    if (endedRemoteEvent == CallEvent.ENDED_REMOTE_HANGUP) {
+    if (endedRemoteEvent == CallEvent.ENDED_REMOTE_HANGUP || endedRemoteEvent == CallEvent.ENDED_REMOTE_HANGUP_BUSY) {
       if (remotePeerIsActive) {
         state = outgoingBeforeAccept ? WebRtcViewModel.State.RECIPIENT_UNAVAILABLE : WebRtcViewModel.State.CALL_DISCONNECTED;
       }
@@ -248,6 +249,11 @@ public class ActiveCallActionProcessorDelegate extends WebRtcActionProcessor {
       }
 
       return terminate(currentState, activePeer);
+    } else {
+      RemotePeer peerByCallId = currentState.getCallInfoState().getPeerByCallId(callId);
+      if (peerByCallId != null) {
+        webRtcInteractor.terminateCall(peerByCallId.getId());
+      }
     }
 
     return currentState;

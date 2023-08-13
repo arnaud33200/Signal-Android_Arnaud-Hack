@@ -9,6 +9,8 @@ import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.ItemTouchHelper
 import app.cash.exhaustive.Exhaustive
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
+import org.signal.core.util.concurrent.LifecycleDisposable
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.mediasend.Media
 import org.thoughtcrime.securesms.mediasend.v2.MediaSelectionNavigator
@@ -24,6 +26,8 @@ class MediaSelectionGalleryFragment : Fragment(R.layout.fragment_container), Med
 
   private lateinit var mediaGalleryFragment: MediaGalleryFragment
 
+  private val lifecycleDisposable = LifecycleDisposable()
+
   private val navigator = MediaSelectionNavigator(
     toCamera = R.id.action_mediaGalleryFragment_to_mediaCaptureFragment
   )
@@ -33,6 +37,15 @@ class MediaSelectionGalleryFragment : Fragment(R.layout.fragment_container), Med
   )
 
   override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+    val args = arguments
+    val isFirst = when {
+      args == null -> false
+      args.containsKey("suppressEmptyError") -> args.getBoolean("suppressEmptyError")
+      args.containsKey("first") -> args.getBoolean("first")
+      else -> false
+    }
+
+    sharedViewModel.setSuppressEmptyError(isFirst)
     mediaGalleryFragment = ensureMediaGalleryFragment()
 
     mediaGalleryFragment.bindSelectedMediaItemDragHelper(ItemTouchHelper(MediaSelectionItemTouchHelper(sharedViewModel)))
@@ -52,7 +65,10 @@ class MediaSelectionGalleryFragment : Fragment(R.layout.fragment_container), Med
       )
     }
 
-    sharedViewModel.mediaErrors.observe(viewLifecycleOwner, this::handleError)
+    lifecycleDisposable.bindTo(viewLifecycleOwner)
+    lifecycleDisposable += sharedViewModel.mediaErrors
+      .observeOn(AndroidSchedulers.mainThread())
+      .subscribe(this::handleError)
   }
 
   private fun handleError(error: MediaValidator.FilterError) {
@@ -64,8 +80,6 @@ class MediaSelectionGalleryFragment : Fragment(R.layout.fragment_container), Med
       is MediaValidator.FilterError.NoItems -> {
         if (error.cause != null) {
           handleError(error.cause)
-        } else {
-          Toast.makeText(requireContext(), R.string.MediaReviewFragment__one_or_more_items_were_invalid, Toast.LENGTH_SHORT).show()
         }
       }
     }

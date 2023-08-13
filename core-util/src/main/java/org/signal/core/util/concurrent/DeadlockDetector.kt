@@ -1,9 +1,9 @@
 package org.signal.core.util.concurrent
 
 import android.os.Handler
-import org.signal.core.util.ExceptionUtil
 import org.signal.core.util.logging.Log
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.ThreadPoolExecutor
 
 /**
  * A class that polls active threads at a set interval and logs when multiple threads are BLOCKED.
@@ -21,13 +21,13 @@ class DeadlockDetector(private val handler: Handler, private val pollingInterval
   var lastThreadDumpTime: Long = -1
 
   fun start() {
-    Log.d(TAG, "Beginning deadlock monitoring.");
+    Log.d(TAG, "Beginning deadlock monitoring.")
     running = true
     handler.postDelayed(this::poll, pollingInterval)
   }
 
   fun stop() {
-    Log.d(TAG, "Ending deadlock monitoring.");
+    Log.d(TAG, "Ending deadlock monitoring.")
     running = false
     handler.removeCallbacksAndMessages(null)
   }
@@ -40,7 +40,7 @@ class DeadlockDetector(private val handler: Handler, private val pollingInterval
         val thread: Thread = entry.key
         val stack: Array<StackTraceElement> = entry.value
 
-        thread.state == Thread.State.BLOCKED || (waitingStates.contains(thread.state) && stack.any { it.methodName.startsWith("lock") || it.methodName.startsWith("waitForConnection") })
+        thread.state == Thread.State.BLOCKED || (thread.state.isWaiting() && stack.hasPotentialLock())
       }
       .filter { entry -> !BLOCK_BLOCKLIST.contains(entry.key.name) }
 
@@ -73,7 +73,8 @@ class DeadlockDetector(private val handler: Handler, private val pollingInterval
           .filter { it.key.name.startsWith(executorInfo.namePrefix) }
           .toMap()
 
-        val executor: TracingExecutorService = executorInfo.executor as TracingExecutorService
+        val executor: ThreadPoolExecutor = executorInfo.executor as ThreadPoolExecutor
+
         Log.w(TAG, buildLogString("Found a full executor! ${executor.activeCount}/${executor.maximumPoolSize} threads active with ${executor.queue.size} tasks queued.", fullMap))
       }
       lastThreadDump = threads
@@ -92,6 +93,16 @@ class DeadlockDetector(private val handler: Handler, private val pollingInterval
     val executor: ExecutorService,
     val namePrefix: String
   )
+
+  private fun Thread.State.isWaiting(): Boolean {
+    return waitingStates.contains(this)
+  }
+
+  private fun Array<StackTraceElement>.hasPotentialLock(): Boolean {
+    return any {
+      it.methodName.startsWith("lock") || (it.methodName.startsWith("waitForConnection") && !it.className.contains("IncomingMessageObserver"))
+    }
+  }
 
   companion object {
     private val TAG = Log.tag(DeadlockDetector::class.java)
@@ -112,13 +123,7 @@ class DeadlockDetector(private val handler: Handler, private val pollingInterval
       for (entry in blocked) {
         stringBuilder.append("-- [${entry.key.id}] ${entry.key.name} | ${entry.key.state}\n")
 
-
-        val callerThrowable: Throwable? = TracedThreads.callerStackTraces[entry.key.id]
-        val stackTrace: Array<StackTraceElement> = if (callerThrowable != null) {
-          ExceptionUtil.joinStackTrace(entry.value, callerThrowable.stackTrace)
-        } else {
-          entry.value
-        }
+        val stackTrace: Array<StackTraceElement> = entry.value
 
         for (element in stackTrace) {
           stringBuilder.append("$element\n")
@@ -131,7 +136,7 @@ class DeadlockDetector(private val handler: Handler, private val pollingInterval
     }
 
     private fun isExecutorFull(executor: ExecutorService): Boolean {
-      return if (executor is TracingExecutorService) {
+      return if (executor is ThreadPoolExecutor) {
         executor.queue.size > CONCERNING_QUEUE_THRESHOLD
       } else {
         false

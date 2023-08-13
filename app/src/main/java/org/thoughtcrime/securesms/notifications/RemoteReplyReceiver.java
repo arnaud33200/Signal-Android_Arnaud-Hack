@@ -26,19 +26,17 @@ import android.os.Bundle;
 import androidx.core.app.RemoteInput;
 
 import org.signal.core.util.concurrent.SignalExecutors;
-import org.thoughtcrime.securesms.database.MessageDatabase.MarkedMessageInfo;
+import org.thoughtcrime.securesms.database.MessageTable.MarkedMessageInfo;
 import org.thoughtcrime.securesms.database.SignalDatabase;
 import org.thoughtcrime.securesms.database.model.ParentStoryId;
 import org.thoughtcrime.securesms.database.model.StoryType;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
-import org.thoughtcrime.securesms.mms.OutgoingMediaMessage;
-import org.thoughtcrime.securesms.notifications.v2.MessageNotifierV2;
-import org.thoughtcrime.securesms.notifications.v2.NotificationThread;
+import org.thoughtcrime.securesms.mms.OutgoingMessage;
+import org.thoughtcrime.securesms.notifications.v2.DefaultMessageNotifier;
+import org.thoughtcrime.securesms.notifications.v2.ConversationId;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
 import org.thoughtcrime.securesms.sms.MessageSender;
-import org.thoughtcrime.securesms.sms.OutgoingEncryptedMessage;
-import org.thoughtcrime.securesms.sms.OutgoingTextMessage;
 
 import java.util.Collections;
 import java.util.LinkedList;
@@ -67,7 +65,7 @@ public class RemoteReplyReceiver extends BroadcastReceiver {
 
     final RecipientId  recipientId  = intent.getParcelableExtra(RECIPIENT_EXTRA);
     final ReplyMethod  replyMethod  = (ReplyMethod) intent.getSerializableExtra(REPLY_METHOD);
-    final CharSequence responseText = remoteInput.getCharSequence(MessageNotifierV2.EXTRA_REMOTE_REPLY);
+    final CharSequence responseText = remoteInput.getCharSequence(DefaultMessageNotifier.EXTRA_REMOTE_REPLY);
     final long         groupStoryId = intent.getLongExtra(GROUP_STORY_ID_EXTRA, Long.MIN_VALUE);
 
     if (recipientId == null) throw new AssertionError("No recipientId specified");
@@ -78,41 +76,38 @@ public class RemoteReplyReceiver extends BroadcastReceiver {
         long threadId;
 
         Recipient     recipient      = Recipient.resolved(recipientId);
-        int           subscriptionId = recipient.getDefaultSubscriptionId().orElse(-1);
         long          expiresIn      = TimeUnit.SECONDS.toMillis(recipient.getExpiresInSeconds());
         ParentStoryId parentStoryId  = groupStoryId != Long.MIN_VALUE ? ParentStoryId.deserialize(groupStoryId) : null;
 
         switch (replyMethod) {
           case GroupMessage: {
-            OutgoingMediaMessage reply = new OutgoingMediaMessage(recipient,
-                                                                  responseText.toString(),
-                                                                  new LinkedList<>(),
-                                                                  System.currentTimeMillis(),
-                                                                  subscriptionId,
-                                                                  expiresIn,
-                                                                  false,
-                                                                  0,
-                                                                  StoryType.NONE,
-                                                                  parentStoryId,
-                                                                  false,
-                                                                  null,
-                                                                  Collections.emptyList(),
-                                                                  Collections.emptyList(),
-                                                                  Collections.emptyList(),
-                                                                  Collections.emptySet(),
-                                                                  Collections.emptySet(),
-                                                                  null);
-            threadId = MessageSender.send(context, reply, -1, false, null, null);
+            OutgoingMessage reply = new OutgoingMessage(recipient,
+                                                        responseText.toString(),
+                                                        new LinkedList<>(),
+                                                        System.currentTimeMillis(),
+                                                        expiresIn,
+                                                        false,
+                                                        0,
+                                                        StoryType.NONE,
+                                                        parentStoryId,
+                                                        false,
+                                                        null,
+                                                        Collections.emptyList(),
+                                                        Collections.emptyList(),
+                                                        Collections.emptyList(),
+                                                        Collections.emptySet(),
+                                                        Collections.emptySet(),
+                                                        null,
+                                                        recipient.isPushGroup(),
+                                                        null,
+                                                        -1,
+                                                        0);
+            threadId = MessageSender.send(context, reply, -1, MessageSender.SendType.SIGNAL, null, null);
             break;
           }
           case SecureMessage: {
-            OutgoingEncryptedMessage reply = new OutgoingEncryptedMessage(recipient, responseText.toString(), expiresIn);
-            threadId = MessageSender.send(context, reply, -1, false, null, null);
-            break;
-          }
-          case UnsecuredSmsMessage: {
-            OutgoingTextMessage reply = new OutgoingTextMessage(recipient, responseText.toString(), expiresIn, subscriptionId);
-            threadId = MessageSender.send(context, reply, -1, true, null, null);
+            OutgoingMessage reply = OutgoingMessage.text(recipient, responseText.toString(), expiresIn, System.currentTimeMillis(), null);
+            threadId = MessageSender.send(context, reply, -1, MessageSender.SendType.SIGNAL, null, null);
             break;
           }
           default:
@@ -120,7 +115,7 @@ public class RemoteReplyReceiver extends BroadcastReceiver {
         }
 
         ApplicationDependencies.getMessageNotifier()
-                               .addStickyThread(new NotificationThread(threadId, groupStoryId != Long.MIN_VALUE ? groupStoryId : null),
+                               .addStickyThread(new ConversationId(threadId, groupStoryId != Long.MIN_VALUE ? groupStoryId : null),
                                                 intent.getLongExtra(EARLIEST_TIMESTAMP, System.currentTimeMillis()));
 
         List<MarkedMessageInfo> messageIds = SignalDatabase.threads().setRead(threadId, true);

@@ -10,13 +10,15 @@ package org.whispersystems.signalservice.api.messages;
 import org.whispersystems.signalservice.internal.push.http.CancelationSignal;
 import org.whispersystems.signalservice.internal.push.http.ResumableUploadSpec;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.Optional;
 
 /**
  * Represents a local SignalServiceAttachment to be sent.
  */
-public class SignalServiceAttachmentStream extends SignalServiceAttachment {
+public class SignalServiceAttachmentStream extends SignalServiceAttachment implements Closeable {
 
   private final InputStream                   inputStream;
   private final long                          length;
@@ -33,6 +35,7 @@ public class SignalServiceAttachmentStream extends SignalServiceAttachment {
   private final Optional<String>              caption;
   private final Optional<String>              blurHash;
   private final Optional<ResumableUploadSpec> resumableUploadSpec;
+  private final boolean                       isIncremental;
 
   public SignalServiceAttachmentStream(InputStream inputStream,
                                        String contentType,
@@ -44,7 +47,7 @@ public class SignalServiceAttachmentStream extends SignalServiceAttachment {
                                        ProgressListener listener,
                                        CancelationSignal cancelationSignal)
   {
-    this(inputStream, contentType, length, fileName, voiceNote, borderless, gif, Optional.empty(), 0, 0, System.currentTimeMillis(), Optional.empty(), Optional.empty(), listener, cancelationSignal, Optional.empty());
+    this(inputStream, contentType, length, fileName, voiceNote, borderless, gif, Optional.empty(), 0, 0, System.currentTimeMillis(), Optional.empty(), Optional.empty(), listener, cancelationSignal, Optional.empty(), false);
   }
 
   public SignalServiceAttachmentStream(InputStream inputStream,
@@ -62,7 +65,8 @@ public class SignalServiceAttachmentStream extends SignalServiceAttachment {
                                        Optional<String> blurHash,
                                        ProgressListener listener,
                                        CancelationSignal cancelationSignal,
-                                       Optional<ResumableUploadSpec> resumableUploadSpec)
+                                       Optional<ResumableUploadSpec> resumableUploadSpec,
+                                       boolean isIncremental)
   {
     super(contentType);
     this.inputStream             = inputStream;
@@ -80,6 +84,7 @@ public class SignalServiceAttachmentStream extends SignalServiceAttachment {
     this.blurHash                = blurHash;
     this.cancelationSignal       = cancelationSignal;
     this.resumableUploadSpec     = resumableUploadSpec;
+    this.isIncremental           = isIncremental;
   }
 
   @Override
@@ -150,5 +155,14 @@ public class SignalServiceAttachmentStream extends SignalServiceAttachment {
 
   public Optional<ResumableUploadSpec> getResumableUploadSpec() {
     return resumableUploadSpec;
+  }
+
+  public boolean isIncremental() {
+    return isIncremental;
+  }
+
+  @Override
+  public void close() throws IOException {
+    inputStream.close();
   }
 }

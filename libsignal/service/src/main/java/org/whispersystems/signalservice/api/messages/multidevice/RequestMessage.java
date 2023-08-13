@@ -28,10 +28,6 @@ public class RequestMessage {
     return request.getType() == Request.Type.CONTACTS;
   }
 
-  public boolean isGroupsRequest() {
-    return request.getType() == Request.Type.GROUPS;
-  }
-
   public boolean isBlockedListRequest() {
     return request.getType() == Request.Type.BLOCKED;
   }
@@ -46,5 +42,9 @@ public class RequestMessage {
 
   public boolean isPniIdentityRequest() {
     return request.getType() == Request.Type.PNI_IDENTITY;
+  }
+
+  public boolean isUrgent() {
+    return isContactsRequest() || isKeysRequest() || isPniIdentityRequest();
   }
 }

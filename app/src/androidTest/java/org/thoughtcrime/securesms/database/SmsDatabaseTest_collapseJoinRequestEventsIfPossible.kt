@@ -21,9 +21,8 @@ import org.thoughtcrime.securesms.keyvalue.SignalStore
 import org.thoughtcrime.securesms.recipients.RecipientId
 import org.thoughtcrime.securesms.sms.IncomingGroupUpdateMessage
 import org.thoughtcrime.securesms.sms.IncomingTextMessage
-import org.whispersystems.signalservice.api.push.ACI
-import org.whispersystems.signalservice.api.push.PNI
-import org.whispersystems.signalservice.api.push.ServiceId
+import org.whispersystems.signalservice.api.push.ServiceId.ACI
+import org.whispersystems.signalservice.api.push.ServiceId.PNI
 import java.util.Optional
 import java.util.UUID
 
@@ -31,8 +30,8 @@ import java.util.UUID
 @RunWith(AndroidJUnit4::class)
 class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
 
-  private lateinit var recipients: RecipientDatabase
-  private lateinit var sms: SmsDatabase
+  private lateinit var recipients: RecipientTable
+  private lateinit var sms: MessageTable
 
   private val localAci = ACI.from(UUID.randomUUID())
   private val localPni = PNI.from(UUID.randomUUID())
@@ -45,7 +44,7 @@ class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
   @Before
   fun setUp() {
     recipients = SignalDatabase.recipients
-    sms = SignalDatabase.sms
+    sms = SignalDatabase.messages
 
     SignalStore.account().setAci(localAci)
     SignalStore.account().setPni(localPni)
@@ -163,7 +162,7 @@ class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
    */
   @Test
   fun previousJoinRequestCollapse() {
-    val latestMessage: MessageDatabase.InsertResult = sms.insertMessageInbox(
+    val latestMessage: MessageTable.InsertResult = sms.insertMessageInbox(
       groupUpdateMessage(
         sender = alice,
         groupContext = groupContext(masterKey = masterKey) {
@@ -197,7 +196,7 @@ class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
   fun previousJoinThenTextCollapse() {
     val secondLatestMessage = sms.insertMessageInbox(smsMessage(sender = alice, body = "What up")).get()
 
-    val latestMessage: MessageDatabase.InsertResult = sms.insertMessageInbox(
+    val latestMessage: MessageTable.InsertResult = sms.insertMessageInbox(
       groupUpdateMessage(
         sender = alice,
         groupContext = groupContext(masterKey = masterKey) {
@@ -231,7 +230,7 @@ class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
    */
   @Test
   fun previousCollapseAndJoinRequestDoubleCollapse() {
-    val secondLatestMessage: MessageDatabase.InsertResult = sms.insertMessageInbox(
+    val secondLatestMessage: MessageTable.InsertResult = sms.insertMessageInbox(
       groupUpdateMessage(
         sender = alice,
         groupContext = groupContext(masterKey = masterKey) {
@@ -243,7 +242,7 @@ class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
       )
     ).get()
 
-    val latestMessage: MessageDatabase.InsertResult = sms.insertMessageInbox(
+    val latestMessage: MessageTable.InsertResult = sms.insertMessageInbox(
       groupUpdateMessage(
         sender = alice,
         groupContext = groupContext(masterKey = masterKey) {
@@ -283,8 +282,8 @@ class SmsDatabaseTest_collapseJoinRequestEventsIfPossible {
   }
 
   companion object {
-    private val aliceServiceId: ServiceId = ACI.from(UUID.fromString("3436efbe-5a76-47fa-a98a-7e72c948a82e"))
-    private val bobServiceId: ServiceId = ACI.from(UUID.fromString("8de7f691-0b60-4a68-9cd9-ed2f8453f9ed"))
+    private val aliceServiceId: ACI = ACI.from(UUID.fromString("3436efbe-5a76-47fa-a98a-7e72c948a82e"))
+    private val bobServiceId: ACI = ACI.from(UUID.fromString("8de7f691-0b60-4a68-9cd9-ed2f8453f9ed"))
 
     private val masterKey = GroupMasterKey(Hex.fromStringCondensed("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"))
     private val groupId = GroupId.v2(masterKey)

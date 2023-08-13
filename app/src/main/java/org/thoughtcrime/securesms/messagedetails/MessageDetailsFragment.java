@@ -1,5 +1,6 @@
 package org.thoughtcrime.securesms.messagedetails;
 
+import android.content.DialogInterface;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -7,16 +8,15 @@ import android.widget.FrameLayout;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.DialogFragment;
-import androidx.lifecycle.ViewModelProviders;
+import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.components.FullScreenDialogFragment;
-import org.thoughtcrime.securesms.components.recyclerview.ToolbarShadowAnimationHelper;
 import org.thoughtcrime.securesms.conversation.colors.Colorizer;
 import org.thoughtcrime.securesms.conversation.colors.RecyclerViewColorizer;
-import org.thoughtcrime.securesms.conversation.ui.error.SafetyNumberChangeDialog;
-import org.thoughtcrime.securesms.database.MmsSmsDatabase;
+import org.thoughtcrime.securesms.conversation.ui.edit.EditMessageHistoryDialog;
+import org.thoughtcrime.securesms.database.model.MessageId;
 import org.thoughtcrime.securesms.database.model.MessageRecord;
 import org.thoughtcrime.securesms.giph.mp4.GiphyMp4PlaybackController;
 import org.thoughtcrime.securesms.giph.mp4.GiphyMp4ProjectionPlayerHolder;
@@ -26,15 +26,17 @@ import org.thoughtcrime.securesms.messagedetails.MessageDetailsViewModel.Factory
 import org.thoughtcrime.securesms.mms.GlideApp;
 import org.thoughtcrime.securesms.mms.GlideRequests;
 import org.thoughtcrime.securesms.recipients.RecipientId;
+import org.thoughtcrime.securesms.safety.SafetyNumberBottomSheet;
+import org.thoughtcrime.securesms.util.Material3OnScrollHelper;
+import org.thoughtcrime.securesms.util.MessageRecordUtil;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-public final class MessageDetailsFragment extends FullScreenDialogFragment {
+public final class MessageDetailsFragment extends FullScreenDialogFragment implements MessageDetailsAdapter.Callbacks {
 
   private static final String MESSAGE_ID_EXTRA = "message_id";
-  private static final String TYPE_EXTRA       = "type";
   private static final String RECIPIENT_EXTRA  = "recipient_id";
 
   private GlideRequests           glideRequests;
@@ -48,7 +50,6 @@ public final class MessageDetailsFragment extends FullScreenDialogFragment {
     Bundle         args           = new Bundle();
 
     args.putLong(MESSAGE_ID_EXTRA, message.getId());
-    args.putString(TYPE_EXTRA, message.isMms() ? MmsSmsDatabase.MMS_TRANSPORT : MmsSmsDatabase.SMS_TRANSPORT);
     args.putParcelable(RECIPIENT_EXTRA, recipientId);
 
     dialogFragment.setArguments(args);
@@ -76,37 +77,35 @@ public final class MessageDetailsFragment extends FullScreenDialogFragment {
   }
 
   @Override
-  public void onResume() {
-    super.onResume();
-    adapter.resumeMessageExpirationTimer();
-  }
+  public void onDismiss(@NonNull DialogInterface dialog) {
+    super.onDismiss(dialog);
 
-  @Override
-  public void onPause() {
-    super.onPause();
-    adapter.pauseMessageExpirationTimer();
+    if (getActivity() instanceof Callback) {
+      ((Callback) getActivity()).onMessageDetailsFragmentDismissed();
+    } else if (getParentFragment() instanceof Callback) {
+      ((Callback) getParentFragment()).onMessageDetailsFragmentDismissed();
+    }
   }
 
   private void initializeList(@NonNull View view) {
-    RecyclerView  list          = view.findViewById(R.id.message_details_list);
-    View          toolbarShadow = view.findViewById(R.id.toolbar_shadow);
+    RecyclerView list          = view.findViewById(R.id.message_details_list);
+    View         toolbarShadow = view.findViewById(R.id.toolbar_shadow);
 
     colorizer             = new Colorizer();
-    adapter               = new MessageDetailsAdapter(this, glideRequests, colorizer, this::onErrorClicked);
+    adapter               = new MessageDetailsAdapter(getViewLifecycleOwner(), glideRequests, colorizer, this);
     recyclerViewColorizer = new RecyclerViewColorizer(list);
 
     list.setAdapter(adapter);
     list.setItemAnimator(null);
-    list.addOnScrollListener(new ToolbarShadowAnimationHelper(toolbarShadow));
+    new Material3OnScrollHelper(requireActivity(), toolbarShadow, getViewLifecycleOwner()).attach(list);
   }
 
   private void initializeViewModel() {
     final RecipientId recipientId = requireArguments().getParcelable(RECIPIENT_EXTRA);
-    final String      type        = requireArguments().getString(TYPE_EXTRA);
     final Long        messageId   = requireArguments().getLong(MESSAGE_ID_EXTRA, -1);
-    final Factory     factory     = new Factory(recipientId, type, messageId);
+    final Factory     factory     = new Factory(recipientId, messageId);
 
-    viewModel = ViewModelProviders.of(this, factory).get(MessageDetailsViewModel.class);
+    viewModel = new ViewModelProvider(this, factory).get(MessageDetailsViewModel.class);
     viewModel.getMessageDetails().observe(this, details -> {
       if (details == null) {
         dismissAllowingStateLoss();
@@ -130,6 +129,10 @@ public final class MessageDetailsFragment extends FullScreenDialogFragment {
     List<MessageDetailsViewState<?>> list = new ArrayList<>();
 
     list.add(new MessageDetailsViewState<>(details.getConversationMessage(), MessageDetailsViewState.MESSAGE_HEADER));
+
+    if (MessageRecordUtil.isEditMessage(details.getConversationMessage().getMessageRecord())) {
+      list.add(new MessageDetailsViewState<>(details.getConversationMessage().getMessageRecord(), MessageDetailsViewState.EDIT_HISTORY));
+    }
 
     if (details.getConversationMessage().getMessageRecord().isOutgoing()) {
       addRecipients(list, RecipientHeader.NOT_SENT, details.getNotSent());
@@ -158,7 +161,23 @@ public final class MessageDetailsFragment extends FullScreenDialogFragment {
     return true;
   }
 
-  private void onErrorClicked(@NonNull MessageRecord messageRecord) {
-    SafetyNumberChangeDialog.show(requireContext(), getChildFragmentManager(), messageRecord);
+  @Override
+  public void onErrorClicked(@NonNull MessageRecord messageRecord) {
+    SafetyNumberBottomSheet
+        .forMessageRecord(requireContext(), messageRecord)
+        .show(getChildFragmentManager());
+  }
+
+  @Override
+  public void onViewEditHistoryClicked(MessageRecord record) {
+    if (record.isOutgoing()) {
+      EditMessageHistoryDialog.show(getParentFragmentManager(), record.getToRecipient().getId(), record);
+    } else {
+      EditMessageHistoryDialog.show(getParentFragmentManager(), record.getFromRecipient().getId(), record);
+    }
+  }
+
+  public interface Callback {
+    void onMessageDetailsFragmentDismissed();
   }
 }

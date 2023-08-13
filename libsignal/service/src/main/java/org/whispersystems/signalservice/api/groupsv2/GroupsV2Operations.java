@@ -14,8 +14,8 @@ import org.signal.libsignal.zkgroup.groups.GroupSecretParams;
 import org.signal.libsignal.zkgroup.groups.ProfileKeyCiphertext;
 import org.signal.libsignal.zkgroup.groups.UuidCiphertext;
 import org.signal.libsignal.zkgroup.profiles.ClientZkProfileOperations;
+import org.signal.libsignal.zkgroup.profiles.ExpiringProfileKeyCredential;
 import org.signal.libsignal.zkgroup.profiles.ProfileKey;
-import org.signal.libsignal.zkgroup.profiles.ProfileKeyCredential;
 import org.signal.libsignal.zkgroup.profiles.ProfileKeyCredentialPresentation;
 import org.signal.storageservice.protos.groups.AccessControl;
 import org.signal.storageservice.protos.groups.BannedMember;
@@ -39,6 +39,9 @@ import org.signal.storageservice.protos.groups.local.DecryptedRequestingMember;
 import org.signal.storageservice.protos.groups.local.DecryptedString;
 import org.signal.storageservice.protos.groups.local.DecryptedTimer;
 import org.signal.storageservice.protos.groups.local.EnabledState;
+import org.whispersystems.signalservice.api.push.ServiceId.ACI;
+import org.whispersystems.signalservice.api.push.ServiceId.PNI;
+import org.whispersystems.signalservice.api.push.ServiceId;
 import org.whispersystems.signalservice.api.util.UuidUtil;
 
 import java.security.SecureRandom;
@@ -63,7 +66,7 @@ public final class GroupsV2Operations {
   public static final UUID UNKNOWN_UUID = UuidUtil.UNKNOWN_UUID;
 
   /** Highest change epoch this class knows now to decrypt */
-  public static final int HIGHEST_KNOWN_EPOCH = 4;
+  public static final int HIGHEST_KNOWN_EPOCH = 5;
 
   private final ServerPublicParams        serverPublicParams;
   private final ClientZkProfileOperations clientZkProfileOperations;
@@ -109,15 +112,15 @@ public final class GroupsV2Operations {
                                                               .setAttributes(AccessControl.AccessRequired.MEMBER)
                                                               .setMembers(AccessControl.AccessRequired.MEMBER));
 
-    group.addMembers(groupOperations.member(self.getProfileKeyCredential().get(), Member.Role.ADMINISTRATOR));
+    group.addMembers(groupOperations.member(self.requireExpiringProfileKeyCredential(), Member.Role.ADMINISTRATOR));
 
     for (GroupCandidate credential : members) {
-      ProfileKeyCredential profileKeyCredential = credential.getProfileKeyCredential().orElse(null);
+      ExpiringProfileKeyCredential expiringProfileKeyCredential = credential.getExpiringProfileKeyCredential().orElse(null);
 
-      if (profileKeyCredential != null) {
-        group.addMembers(groupOperations.member(profileKeyCredential, memberRole));
+      if (expiringProfileKeyCredential != null) {
+        group.addMembers(groupOperations.member(expiringProfileKeyCredential, memberRole));
       } else {
-        group.addPendingMembers(groupOperations.invitee(credential.getUuid(), memberRole));
+        group.addPendingMembers(groupOperations.invitee(credential.getServiceId(), memberRole));
       }
     }
 
@@ -163,63 +166,65 @@ public final class GroupsV2Operations {
       return GroupChange.Actions.newBuilder().setModifyDescription(createModifyGroupDescriptionAction(description));
     }
 
-    public GroupChange.Actions.Builder createModifyGroupMembershipChange(Set<GroupCandidate> membersToAdd, Set<UUID> bannedMembers, UUID selfUuid) {
+    public GroupChange.Actions.Builder createModifyGroupMembershipChange(Set<GroupCandidate> membersToAdd, Set<ServiceId> bannedMembers, ACI selfAci) {
       final GroupOperations groupOperations = forGroup(groupSecretParams);
 
-      Set<UUID> membersToUnban = membersToAdd.stream().map(GroupCandidate::getUuid).filter(bannedMembers::contains).collect(Collectors.toSet());
+      Set<ServiceId> membersToUnban = membersToAdd.stream().map(GroupCandidate::getServiceId).filter(bannedMembers::contains).collect(Collectors.toSet());
 
       GroupChange.Actions.Builder actions = membersToUnban.isEmpty() ? GroupChange.Actions.newBuilder()
-                                                                     : createUnbanUuidsChange(membersToUnban);
+                                                                     : createUnbanServiceIdsChange(membersToUnban);
 
       for (GroupCandidate credential : membersToAdd) {
-        Member.Role          newMemberRole        = Member.Role.DEFAULT;
-        ProfileKeyCredential profileKeyCredential = credential.getProfileKeyCredential().orElse(null);
+        Member.Role                  newMemberRole                = Member.Role.DEFAULT;
+        ExpiringProfileKeyCredential expiringProfileKeyCredential = credential.getExpiringProfileKeyCredential().orElse(null);
 
-        if (profileKeyCredential != null) {
+        if (expiringProfileKeyCredential != null) {
           actions.addAddMembers(GroupChange.Actions.AddMemberAction
                                                    .newBuilder()
-                                                   .setAdded(groupOperations.member(profileKeyCredential, newMemberRole)));
+                                                   .setAdded(groupOperations.member(expiringProfileKeyCredential, newMemberRole)));
         } else {
           actions.addAddPendingMembers(GroupChange.Actions.AddPendingMemberAction
                                                           .newBuilder()
-                                                          .setAdded(groupOperations.invitee(credential.getUuid(), newMemberRole)
-                                                                                   .setAddedByUserId(encryptUuid(selfUuid))));
+                                                          .setAdded(groupOperations.invitee(credential.getServiceId(), newMemberRole)
+                                                                                   .setAddedByUserId(encryptServiceId(selfAci))));
         }
       }
 
       return actions;
     }
 
-    public GroupChange.Actions.Builder createGroupJoinRequest(ProfileKeyCredential profileKeyCredential) {
+    public GroupChange.Actions.Builder createGroupJoinRequest(ExpiringProfileKeyCredential expiringProfileKeyCredential) {
       GroupOperations             groupOperations = forGroup(groupSecretParams);
       GroupChange.Actions.Builder actions         = GroupChange.Actions.newBuilder();
 
       actions.addAddRequestingMembers(GroupChange.Actions.AddRequestingMemberAction
                                                          .newBuilder()
-                                                         .setAdded(groupOperations.requestingMember(profileKeyCredential)));
+                                                         .setAdded(groupOperations.requestingMember(expiringProfileKeyCredential)));
 
       return actions;
     }
 
-    public GroupChange.Actions.Builder createGroupJoinDirect(ProfileKeyCredential profileKeyCredential) {
+    public GroupChange.Actions.Builder createGroupJoinDirect(ExpiringProfileKeyCredential expiringProfileKeyCredential) {
       GroupOperations             groupOperations = forGroup(groupSecretParams);
       GroupChange.Actions.Builder actions         = GroupChange.Actions.newBuilder();
 
       actions.addAddMembers(GroupChange.Actions.AddMemberAction
                                                .newBuilder()
-                                               .setAdded(groupOperations.member(profileKeyCredential, Member.Role.DEFAULT)));
+                                               .setAdded(groupOperations.member(expiringProfileKeyCredential, Member.Role.DEFAULT)));
 
       return actions;
     }
 
-    public GroupChange.Actions.Builder createRefuseGroupJoinRequest(Set<UUID> requestsToRemove, boolean alsoBan, List<DecryptedBannedMember> bannedMembers) {
-      GroupChange.Actions.Builder actions = alsoBan ? createBanUuidsChange(requestsToRemove, false, bannedMembers)
+    public GroupChange.Actions.Builder createRefuseGroupJoinRequest(Set<? extends ServiceId> requestsToRemove, boolean alsoBan, List<DecryptedBannedMember> bannedMembers) {
+      GroupChange.Actions.Builder actions = alsoBan ? createBanServiceIdsChange(requestsToRemove, false, bannedMembers)
                                                     : GroupChange.Actions.newBuilder();
 
-      for (UUID uuid : requestsToRemove) {
-        actions.addDeleteRequestingMembers(GroupChange.Actions.DeleteRequestingMemberAction
-                                                              .newBuilder()
-                                                              .setDeletedUserId(encryptUuid(uuid)));
+      for (ServiceId serviceId : requestsToRemove) {
+        if (serviceId instanceof ACI) {
+          actions.addDeleteRequestingMembers(GroupChange.Actions.DeleteRequestingMemberAction
+                                                                .newBuilder()
+                                                                .setDeletedUserId(encryptServiceId(serviceId)));
+        }
       }
 
       return actions;
@@ -232,32 +237,32 @@ public final class GroupsV2Operations {
         actions.addPromoteRequestingMembers(GroupChange.Actions.PromoteRequestingMemberAction
                                                                .newBuilder()
                                                                .setRole(Member.Role.DEFAULT)
-                                                               .setUserId(encryptUuid(uuid)));
+                                                               .setUserId(encryptServiceId(ACI.from(uuid))));
       }
 
       return actions;
     }
 
-    public GroupChange.Actions.Builder createRemoveMembersChange(final Set<UUID> membersToRemove, boolean alsoBan, List<DecryptedBannedMember> bannedMembers) {
-      GroupChange.Actions.Builder actions = alsoBan ? createBanUuidsChange(membersToRemove, false, bannedMembers)
+    public GroupChange.Actions.Builder createRemoveMembersChange(final Set<ACI> membersToRemove, boolean alsoBan, List<DecryptedBannedMember> bannedMembers) {
+      GroupChange.Actions.Builder actions = alsoBan ? createBanServiceIdsChange(membersToRemove, false, bannedMembers)
                                                     : GroupChange.Actions.newBuilder();
 
-      for (UUID remove: membersToRemove) {
+      for (ACI remove: membersToRemove) {
         actions.addDeleteMembers(GroupChange.Actions.DeleteMemberAction
                                                     .newBuilder()
-                                                    .setDeletedUserId(encryptUuid(remove)));
+                                                    .setDeletedUserId(encryptServiceId(remove)));
       }
 
       return actions;
     }
 
-    public GroupChange.Actions.Builder createLeaveAndPromoteMembersToAdmin(UUID self, List<UUID> membersToMakeAdmin) {
+    public GroupChange.Actions.Builder createLeaveAndPromoteMembersToAdmin(ACI self, List<UUID> membersToMakeAdmin) {
       GroupChange.Actions.Builder actions = createRemoveMembersChange(Collections.singleton(self), false, Collections.emptyList());
 
       for (UUID member : membersToMakeAdmin) {
         actions.addModifyMemberRoles(GroupChange.Actions.ModifyMemberRoleAction
                                                         .newBuilder()
-                                                        .setUserId(encryptUuid(member))
+                                                        .setUserId(encryptServiceId(ACI.from(member)))
                                                         .setRole(Member.Role.ADMINISTRATOR));
       }
 
@@ -272,8 +277,8 @@ public final class GroupsV2Operations {
                                                                                .setTimer(encryptTimer(timerDurationSeconds)));
     }
 
-    public GroupChange.Actions.Builder createUpdateProfileKeyCredentialChange(ProfileKeyCredential profileKeyCredential) {
-      ProfileKeyCredentialPresentation presentation = clientZkProfileOperations.createProfileKeyCredentialPresentation(random, groupSecretParams, profileKeyCredential);
+    public GroupChange.Actions.Builder createUpdateProfileKeyCredentialChange(ExpiringProfileKeyCredential expiringProfileKeyCredential) {
+      ProfileKeyCredentialPresentation presentation = clientZkProfileOperations.createProfileKeyCredentialPresentation(random, groupSecretParams, expiringProfileKeyCredential);
 
       return GroupChange.Actions
                         .newBuilder()
@@ -282,14 +287,20 @@ public final class GroupsV2Operations {
                                                                        .setPresentation(ByteString.copyFrom(presentation.serialize())));
     }
 
-    public GroupChange.Actions.Builder createAcceptInviteChange(ProfileKeyCredential profileKeyCredential) {
-      ProfileKeyCredentialPresentation presentation = clientZkProfileOperations.createProfileKeyCredentialPresentation(random, groupSecretParams, profileKeyCredential);
+    public GroupChange.Actions.Builder createAcceptInviteChange(ExpiringProfileKeyCredential credential) {
+      ProfileKeyCredentialPresentation presentation = clientZkProfileOperations.createProfileKeyCredentialPresentation(random, groupSecretParams, credential);
 
-      return GroupChange.Actions
-                        .newBuilder()
-                        .addPromotePendingMembers(GroupChange.Actions.PromotePendingMemberAction
-                                                                     .newBuilder()
-                                                                     .setPresentation(ByteString.copyFrom(presentation.serialize())));
+      return GroupChange.Actions.newBuilder()
+                                .addPromotePendingMembers(GroupChange.Actions.PromotePendingMemberAction.newBuilder()
+                                                                                                        .setPresentation(ByteString.copyFrom(presentation.serialize())));
+    }
+
+    public GroupChange.Actions.Builder createAcceptPniInviteChange(ExpiringProfileKeyCredential credential) {
+      ByteString presentation = ByteString.copyFrom(clientZkProfileOperations.createProfileKeyCredentialPresentation(random, groupSecretParams, credential).serialize());
+
+      return GroupChange.Actions.newBuilder()
+                                .addPromotePendingPniAciMembers(GroupChange.Actions.PromotePendingPniAciMemberProfileKeyAction.newBuilder()
+                                                                                                                              .setPresentation(presentation));
     }
 
     public GroupChange.Actions.Builder createRemoveInvitationChange(final Set<UuidCiphertext> uuidCipherTextsFromInvitesToRemove) {
@@ -353,41 +364,65 @@ public final class GroupsV2Operations {
                                                                        .setAnnouncementsOnly(isAnnouncementGroup));
     }
 
-    public GroupChange.Actions.Builder createBanUuidsChange(Set<UUID> banUuids, boolean rejectJoinRequest, List<DecryptedBannedMember> bannedMembersList) {
-      GroupChange.Actions.Builder builder = rejectJoinRequest ? createRefuseGroupJoinRequest(banUuids, false, Collections.emptyList())
+    /** Note that this can only ban ACIs. */
+    public GroupChange.Actions.Builder createBanServiceIdsChange(Set<? extends ServiceId> banServiceIds, boolean rejectJoinRequest, List<DecryptedBannedMember> bannedMembersList) {
+      GroupChange.Actions.Builder builder = rejectJoinRequest ? createRefuseGroupJoinRequest(banServiceIds, false, Collections.emptyList())
                                                               : GroupChange.Actions.newBuilder();
 
-      int spacesToFree = bannedMembersList.size() + banUuids.size() - maxGroupSize;
+      int spacesToFree = bannedMembersList.size() + banServiceIds.size() - maxGroupSize;
       if (spacesToFree > 0) {
         List<ByteString> unban = bannedMembersList.stream()
                                                   .sorted(Comparator.comparingLong(DecryptedBannedMember::getTimestamp))
                                                   .limit(spacesToFree)
-                                                  .map(DecryptedBannedMember::getUuid)
+                                                  .map(DecryptedBannedMember::getServiceIdBytes)
                                                   .collect(Collectors.toList());
 
-        for (ByteString uuid : unban) {
-          builder.addDeleteBannedMembers(GroupChange.Actions.DeleteBannedMemberAction.newBuilder().setDeletedUserId(encryptUuid(UuidUtil.fromByteString(uuid))));
+        for (ByteString serviceIdBinary : unban) {
+          builder.addDeleteBannedMembers(GroupChange.Actions.DeleteBannedMemberAction.newBuilder().setDeletedUserId(encryptServiceId(ServiceId.parseOrThrow(serviceIdBinary.toByteArray()))));
         }
       }
 
-      for (UUID uuid : banUuids) {
-        builder.addAddBannedMembers(GroupChange.Actions.AddBannedMemberAction.newBuilder().setAdded(BannedMember.newBuilder().setUserId(encryptUuid(uuid)).build()));
+      for (ServiceId banServiceId : banServiceIds) {
+        builder.addAddBannedMembers(GroupChange.Actions.AddBannedMemberAction.newBuilder().setAdded(BannedMember.newBuilder().setUserId(encryptServiceId(banServiceId)).build()));
       }
 
       return builder;
     }
 
-    public GroupChange.Actions.Builder createUnbanUuidsChange(Set<UUID> banUuids) {
+    public GroupChange.Actions.Builder createUnbanServiceIdsChange(Set<ServiceId> serviceIds) {
       GroupChange.Actions.Builder builder = GroupChange.Actions.newBuilder();
 
-      for (UUID uuid : banUuids) {
-        builder.addDeleteBannedMembers(GroupChange.Actions.DeleteBannedMemberAction.newBuilder().setDeletedUserId(encryptUuid(uuid)).build());
+      for (ServiceId serviceId : serviceIds) {
+        builder.addDeleteBannedMembers(GroupChange.Actions.DeleteBannedMemberAction.newBuilder().setDeletedUserId(encryptServiceId(serviceId)).build());
       }
 
       return builder;
     }
 
-    private Member.Builder member(ProfileKeyCredential credential, Member.Role role) {
+    public GroupChange.Actions.Builder replaceAddMembers(GroupChange.Actions.Builder change, List<GroupCandidate> candidates) throws InvalidInputException {
+      if (change.getAddMembersCount() != candidates.size()) {
+        throw new InvalidInputException("Replacement candidates not same size as original add");
+      }
+
+      for (int i = 0; i < change.getAddMembersCount(); i++) {
+        GroupChange.Actions.AddMemberAction original  = change.getAddMembers(i);
+        GroupCandidate                      candidate = candidates.get(i);
+
+        ExpiringProfileKeyCredential expiringProfileKeyCredential = candidate.getExpiringProfileKeyCredential().orElse(null);
+
+        if (expiringProfileKeyCredential == null) {
+          throw new InvalidInputException("Replacement candidate missing credential");
+        }
+
+        change.setAddMembers(i,
+                             GroupChange.Actions.AddMemberAction.newBuilder()
+                                                                .setAdded(member(expiringProfileKeyCredential, original.getAdded().getRole())));
+      }
+
+      return change;
+    }
+
+    private Member.Builder member(ExpiringProfileKeyCredential credential, Member.Role role) {
       ProfileKeyCredentialPresentation presentation = clientZkProfileOperations.createProfileKeyCredentialPresentation(new SecureRandom(), groupSecretParams, credential);
 
       return Member.newBuilder()
@@ -395,15 +430,15 @@ public final class GroupsV2Operations {
                    .setPresentation(ByteString.copyFrom(presentation.serialize()));
     }
 
-    private RequestingMember.Builder requestingMember(ProfileKeyCredential credential) {
+    private RequestingMember.Builder requestingMember(ExpiringProfileKeyCredential credential) {
       ProfileKeyCredentialPresentation presentation = clientZkProfileOperations.createProfileKeyCredentialPresentation(new SecureRandom(), groupSecretParams, credential);
 
       return RequestingMember.newBuilder()
                              .setPresentation(ByteString.copyFrom(presentation.serialize()));
     }
 
-    public PendingMember.Builder invitee(UUID uuid, Member.Role role) {
-      UuidCiphertext uuidCiphertext = clientZkGroupCipher.encryptUuid(uuid);
+    public PendingMember.Builder invitee(ServiceId serviceId, Member.Role role) {
+      UuidCiphertext uuidCiphertext = clientZkGroupCipher.encrypt(serviceId.getLibSignalServiceId());
 
       Member member = Member.newBuilder()
                             .setRole(role)
@@ -423,17 +458,17 @@ public final class GroupsV2Operations {
       List<DecryptedPendingMember> decryptedPendingMembers = new ArrayList<>(pendingMembersList.size());
 
       for (Member member : membersList) {
-        UUID memberUuid = decryptUuid(member.getUserId());
+        ACI memberAci = decryptAci(member.getUserId());
         decryptedMembers.add(DecryptedMember.newBuilder()
-                                            .setUuid(UuidUtil.toByteString(memberUuid))
+                                            .setAciBytes(memberAci.toByteString())
                                             .setJoinedAtRevision(member.getJoinedAtRevision())
                                             .build());
       }
 
       for (PendingMember member : pendingMembersList) {
-        UUID pendingMemberUuid = decryptUuidOrUnknown(member.getMember().getUserId());
+        ServiceId pendingMemberServiceId = decryptServiceIdOrUnknown(member.getMember().getUserId());
         decryptedPendingMembers.add(DecryptedPendingMember.newBuilder()
-                                                          .setUuid(UuidUtil.toByteString(pendingMemberUuid))
+                                                          .setServiceIdBytes(pendingMemberServiceId.toByteString())
                                                           .build());
       }
 
@@ -474,7 +509,7 @@ public final class GroupsV2Operations {
       }
 
       for (BannedMember member : group.getBannedMembersList()) {
-        decryptedBannedMembers.add(DecryptedBannedMember.newBuilder().setUuid(decryptUuidToByteString(member.getUserId())).setTimestamp(member.getTimestamp()).build());
+        decryptedBannedMembers.add(DecryptedBannedMember.newBuilder().setServiceIdBytes(decryptServiceIdToBinary(member.getUserId())).setTimestamp(member.getTimestamp()).build());
       }
 
       return DecryptedGroup.newBuilder()
@@ -520,16 +555,16 @@ public final class GroupsV2Operations {
       return decryptChange(actions, null);
     }
 
-    public DecryptedGroupChange decryptChange(GroupChange.Actions actions, UUID source)
+    public DecryptedGroupChange decryptChange(GroupChange.Actions actions, ServiceId source)
         throws VerificationFailedException, InvalidGroupStateException
     {
       DecryptedGroupChange.Builder builder = DecryptedGroupChange.newBuilder();
 
       // Field 1
       if (source != null) {
-        builder.setEditor(UuidUtil.toByteString(source));
+        builder.setEditorServiceIdBytes(source.toByteString());
       } else {
-        builder.setEditor(decryptUuidToByteString(actions.getSourceUuid()));
+        builder.setEditorServiceIdBytes(decryptServiceIdToBinary(actions.getSourceServiceId()));
       }
 
       // Field 2
@@ -546,28 +581,36 @@ public final class GroupsV2Operations {
 
       // Field 4
       for (GroupChange.Actions.DeleteMemberAction deleteMemberAction : actions.getDeleteMembersList()) {
-        builder.addDeleteMembers(decryptUuidToByteString(deleteMemberAction.getDeletedUserId()));
+        builder.addDeleteMembers(decryptAciToBinary(deleteMemberAction.getDeletedUserId()));
       }
 
       // Field 5
       for (GroupChange.Actions.ModifyMemberRoleAction modifyMemberRoleAction : actions.getModifyMemberRolesList()) {
         builder.addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder()
                .setRole(modifyMemberRoleAction.getRole())
-               .setUuid(decryptUuidToByteString(modifyMemberRoleAction.getUserId())));
+               .setAciBytes(decryptAciToBinary(modifyMemberRoleAction.getUserId())));
       }
 
       // Field 6
       for (GroupChange.Actions.ModifyMemberProfileKeyAction modifyMemberProfileKeyAction : actions.getModifyMemberProfileKeysList()) {
         try {
-          ProfileKeyCredentialPresentation presentation = new ProfileKeyCredentialPresentation(modifyMemberProfileKeyAction.getPresentation().toByteArray());
-          presentation.getProfileKeyCiphertext();
+          ACI        aci;
+          ProfileKey profileKey;
 
-          UUID uuid = decryptUuid(ByteString.copyFrom(presentation.getUuidCiphertext().serialize()));
+          if (modifyMemberProfileKeyAction.getUserId().isEmpty() || modifyMemberProfileKeyAction.getProfileKey().isEmpty()) {
+            ProfileKeyCredentialPresentation presentation = new ProfileKeyCredentialPresentation(modifyMemberProfileKeyAction.getPresentation().toByteArray());
+            aci        = decryptAci(ByteString.copyFrom(presentation.getUuidCiphertext().serialize()));
+            profileKey = decryptProfileKey(ByteString.copyFrom(presentation.getProfileKeyCiphertext().serialize()), aci);
+          } else {
+            aci        = decryptAci(modifyMemberProfileKeyAction.getUserId());
+            profileKey = decryptProfileKey(modifyMemberProfileKeyAction.getProfileKey(), aci);
+          }
+
           builder.addModifiedProfileKeys(DecryptedMember.newBuilder()
                                                         .setRole(Member.Role.UNKNOWN)
                                                         .setJoinedAtRevision(-1)
-                                                        .setUuid(UuidUtil.toByteString(uuid))
-                                                        .setProfileKey(ByteString.copyFrom(decryptProfileKey(ByteString.copyFrom(presentation.getProfileKeyCiphertext().serialize()), uuid).serialize())));
+                                                        .setAciBytes(aci.toByteString())
+                                                        .setProfileKey(ByteString.copyFrom(profileKey.serialize())));
         } catch (InvalidInputException e) {
           throw new InvalidGroupStateException(e);
         }
@@ -575,44 +618,52 @@ public final class GroupsV2Operations {
 
       // Field 7
       for (GroupChange.Actions.AddPendingMemberAction addPendingMemberAction : actions.getAddPendingMembersList()) {
-        PendingMember added          = addPendingMemberAction.getAdded();
-        Member        member         = added.getMember();
-        ByteString    uuidCipherText = member.getUserId();
-        UUID          uuid           = decryptUuidOrUnknown(uuidCipherText);
+        PendingMember added               = addPendingMemberAction.getAdded();
+        Member        member              = added.getMember();
+        ByteString    serviceIdCipherText = member.getUserId();
+        ServiceId     serviceId           = decryptServiceIdOrUnknown(serviceIdCipherText);
 
         builder.addNewPendingMembers(DecryptedPendingMember.newBuilder()
-                                                           .setUuid(UuidUtil.toByteString(uuid))
-                                                           .setUuidCipherText(uuidCipherText)
+                                                           .setServiceIdBytes(serviceId.toByteString())
+                                                           .setServiceIdCipherText(serviceIdCipherText)
                                                            .setRole(member.getRole())
-                                                           .setAddedByUuid(decryptUuidToByteString(added.getAddedByUserId()))
+                                                           .setAddedByAci(decryptAciToBinary(added.getAddedByUserId()))
                                                            .setTimestamp(added.getTimestamp()));
       }
 
       // Field 8
       for (GroupChange.Actions.DeletePendingMemberAction deletePendingMemberAction : actions.getDeletePendingMembersList()) {
-        ByteString uuidCipherText = deletePendingMemberAction.getDeletedUserId();
-        UUID       uuid           = decryptUuidOrUnknown(uuidCipherText);
+        ByteString serviceIdCipherText = deletePendingMemberAction.getDeletedUserId();
+        ServiceId  serviceId           = decryptServiceIdOrUnknown(serviceIdCipherText);
 
         builder.addDeletePendingMembers(DecryptedPendingMemberRemoval.newBuilder()
-                                                                     .setUuid(UuidUtil.toByteString(uuid))
-                                                                     .setUuidCipherText(uuidCipherText));
+                                                                     .setServiceIdBytes(serviceId.toByteString())
+                                                                     .setServiceIdCipherText(serviceIdCipherText));
       }
 
       // Field 9
       for (GroupChange.Actions.PromotePendingMemberAction promotePendingMemberAction : actions.getPromotePendingMembersList()) {
-        ProfileKeyCredentialPresentation profileKeyCredentialPresentation;
         try {
-          profileKeyCredentialPresentation = new ProfileKeyCredentialPresentation(promotePendingMemberAction.getPresentation().toByteArray());
+          ACI        aci;
+          ProfileKey profileKey;
+
+          if (promotePendingMemberAction.getUserId().isEmpty() || promotePendingMemberAction.getProfileKey().isEmpty()) {
+            ProfileKeyCredentialPresentation presentation = new ProfileKeyCredentialPresentation(promotePendingMemberAction.getPresentation().toByteArray());
+            aci        = decryptAci(ByteString.copyFrom(presentation.getUuidCiphertext().serialize()));
+            profileKey = decryptProfileKey(ByteString.copyFrom(presentation.getProfileKeyCiphertext().serialize()), aci);
+          } else {
+            aci        = decryptAci(promotePendingMemberAction.getUserId());
+            profileKey = decryptProfileKey(promotePendingMemberAction.getProfileKey(), aci);
+          }
+
+          builder.addPromotePendingMembers(DecryptedMember.newBuilder()
+                                                          .setJoinedAtRevision(-1)
+                                                          .setRole(Member.Role.DEFAULT)
+                                                          .setAciBytes(aci.toByteString())
+                                                          .setProfileKey(ByteString.copyFrom(profileKey.serialize())));
         } catch (InvalidInputException e) {
           throw new InvalidGroupStateException(e);
         }
-        UUID       uuid       = clientZkGroupCipher.decryptUuid(profileKeyCredentialPresentation.getUuidCiphertext());
-        ProfileKey profileKey = clientZkGroupCipher.decryptProfileKey(profileKeyCredentialPresentation.getProfileKeyCiphertext(), uuid);
-        builder.addPromotePendingMembers(DecryptedMember.newBuilder()
-                                                        .setJoinedAtRevision(-1)
-                                                        .setRole(Member.Role.DEFAULT)
-                                                        .setUuid(UuidUtil.toByteString(uuid))
-                                                        .setProfileKey(ByteString.copyFrom(profileKey.serialize())));
       }
 
       // Field 10
@@ -653,12 +704,12 @@ public final class GroupsV2Operations {
 
       // Field 17
       for (GroupChange.Actions.DeleteRequestingMemberAction delete : actions.getDeleteRequestingMembersList()) {
-        builder.addDeleteRequestingMembers(decryptUuidToByteString(delete.getDeletedUserId()));
+        builder.addDeleteRequestingMembers(decryptServiceIdToBinary(delete.getDeletedUserId()));
       }
 
       // Field 18
       for (GroupChange.Actions.PromoteRequestingMemberAction promote : actions.getPromoteRequestingMembersList()) {
-        builder.addPromoteRequestingMembers(DecryptedApproveMember.newBuilder().setRole(promote.getRole()).setUuid(decryptUuidToByteString(promote.getUserId())));
+        builder.addPromoteRequestingMembers(DecryptedApproveMember.newBuilder().setRole(promote.getRole()).setAciBytes(decryptAciToBinary(promote.getUserId())));
       }
 
       // Field 19
@@ -678,12 +729,31 @@ public final class GroupsV2Operations {
 
       // Field 22
       for (GroupChange.Actions.AddBannedMemberAction action : actions.getAddBannedMembersList()) {
-        builder.addNewBannedMembers(DecryptedBannedMember.newBuilder().setUuid(decryptUuidToByteString(action.getAdded().getUserId())).setTimestamp(action.getAdded().getTimestamp()).build());
+        builder.addNewBannedMembers(DecryptedBannedMember.newBuilder().setServiceIdBytes(decryptServiceIdToBinary(action.getAdded().getUserId())).setTimestamp(action.getAdded().getTimestamp()).build());
       }
 
       // Field 23
       for (GroupChange.Actions.DeleteBannedMemberAction action : actions.getDeleteBannedMembersList()) {
-        builder.addDeleteBannedMembers(DecryptedBannedMember.newBuilder().setUuid(decryptUuidToByteString(action.getDeletedUserId())).build());
+        builder.addDeleteBannedMembers(DecryptedBannedMember.newBuilder().setServiceIdBytes(decryptServiceIdToBinary(action.getDeletedUserId())).build());
+      }
+
+      // Field 24
+      for (GroupChange.Actions.PromotePendingPniAciMemberProfileKeyAction promotePendingPniAciMemberAction : actions.getPromotePendingPniAciMembersList()) {
+        ACI        aci        = decryptAci(promotePendingPniAciMemberAction.getUserId());
+        ServiceId  pni        = decryptServiceId(promotePendingPniAciMemberAction.getPni());
+        ProfileKey profileKey = decryptProfileKey(promotePendingPniAciMemberAction.getProfileKey(), aci);
+
+        if (!(pni instanceof PNI)) {
+          throw new InvalidGroupStateException();
+        }
+
+        builder.setEditorServiceIdBytes(aci.toByteString())
+               .addPromotePendingPniAciMembers(DecryptedMember.newBuilder()
+                                                              .setAciBytes(aci.toByteString())
+                                                              .setRole(Member.Role.DEFAULT)
+                                                              .setProfileKey(ByteString.copyFrom(profileKey.serialize()))
+                                                              .setJoinedAtRevision(actions.getRevision())
+                                                              .setPniBytes(pni.toByteString()));
       }
 
       return builder.build();
@@ -705,20 +775,26 @@ public final class GroupsV2Operations {
         throws InvalidGroupStateException, VerificationFailedException, InvalidInputException
     {
       if (member.getPresentation().isEmpty()) {
-        UUID uuid = decryptUuid(member.getUserId());
+        ACI aci = decryptAci(member.getUserId());
 
         return DecryptedMember.newBuilder()
-                              .setUuid(UuidUtil.toByteString(uuid))
+                              .setAciBytes(aci.toByteString())
                               .setJoinedAtRevision(member.getJoinedAtRevision())
-                              .setProfileKey(decryptProfileKeyToByteString(member.getProfileKey(), uuid))
+                              .setProfileKey(decryptProfileKeyToByteString(member.getProfileKey(), aci))
                               .setRole(member.getRole());
       } else {
         ProfileKeyCredentialPresentation profileKeyCredentialPresentation = new ProfileKeyCredentialPresentation(member.getPresentation().toByteArray());
-        UUID                             uuid                             = clientZkGroupCipher.decryptUuid(profileKeyCredentialPresentation.getUuidCiphertext());
-        ProfileKey                       profileKey                       = clientZkGroupCipher.decryptProfileKey(profileKeyCredentialPresentation.getProfileKeyCiphertext(), uuid);
+
+        ServiceId serviceId = ServiceId.fromLibSignal(clientZkGroupCipher.decrypt(profileKeyCredentialPresentation.getUuidCiphertext()));
+        if (!(serviceId instanceof ACI)) {
+          throw new InvalidGroupStateException();
+        }
+        ACI aci  = (ACI) serviceId;
+
+        ProfileKey profileKey = clientZkGroupCipher.decryptProfileKey(profileKeyCredentialPresentation.getProfileKeyCiphertext(), aci.getLibSignalAci());
 
         return DecryptedMember.newBuilder()
-                              .setUuid(UuidUtil.toByteString(uuid))
+                              .setAciBytes(aci.toByteString())
                               .setJoinedAtRevision(member.getJoinedAtRevision())
                               .setProfileKey(ByteString.copyFrom(profileKey.serialize()))
                               .setRole(member.getRole());
@@ -729,8 +805,8 @@ public final class GroupsV2Operations {
         throws InvalidGroupStateException, VerificationFailedException
     {
       ByteString userIdCipherText = member.getMember().getUserId();
-      UUID       uuid             = decryptUuidOrUnknown(userIdCipherText);
-      UUID       addedBy          = decryptUuid(member.getAddedByUserId());
+      ServiceId  serviceId        = decryptServiceIdOrUnknown(userIdCipherText);
+      ACI        addedBy          = decryptAci(member.getAddedByUserId());
 
       Member.Role role = member.getMember().getRole();
 
@@ -739,9 +815,9 @@ public final class GroupsV2Operations {
       }
 
       return DecryptedPendingMember.newBuilder()
-                                   .setUuid(UuidUtil.toByteString(uuid))
-                                   .setUuidCipherText(userIdCipherText)
-                                   .setAddedByUuid(UuidUtil.toByteString(addedBy))
+                                   .setServiceIdBytes(serviceId.toByteString())
+                                   .setServiceIdCipherText(userIdCipherText)
+                                   .setAddedByAci(addedBy.toByteString())
                                    .setRole(role)
                                    .setTimestamp(member.getTimestamp())
                                    .build();
@@ -751,11 +827,11 @@ public final class GroupsV2Operations {
         throws InvalidGroupStateException, VerificationFailedException
     {
       if (member.getPresentation().isEmpty()) {
-        UUID uuid = decryptUuid(member.getUserId());
+        ACI aci = decryptAci(member.getUserId());
 
         return DecryptedRequestingMember.newBuilder()
-                                        .setUuid(UuidUtil.toByteString(uuid))
-                                        .setProfileKey(decryptProfileKeyToByteString(member.getProfileKey(), uuid))
+                                        .setAciBytes(aci.toByteString())
+                                        .setProfileKey(decryptProfileKeyToByteString(member.getProfileKey(), aci))
                                         .setTimestamp(member.getTimestamp())
                                         .build();
       } else {
@@ -766,54 +842,84 @@ public final class GroupsV2Operations {
           throw new InvalidGroupStateException(e);
         }
 
-        UUID       uuid       = clientZkGroupCipher.decryptUuid(profileKeyCredentialPresentation.getUuidCiphertext());
-        ProfileKey profileKey = clientZkGroupCipher.decryptProfileKey(profileKeyCredentialPresentation.getProfileKeyCiphertext(), uuid);
+        ServiceId serviceId = ServiceId.fromLibSignal(clientZkGroupCipher.decrypt(profileKeyCredentialPresentation.getUuidCiphertext()));
+        if (!(serviceId instanceof ACI)) {
+          throw new InvalidGroupStateException();
+        }
+        ACI aci = (ACI) serviceId;
+
+        ProfileKey profileKey = clientZkGroupCipher.decryptProfileKey(profileKeyCredentialPresentation.getProfileKeyCiphertext(), aci.getLibSignalAci());
 
         return DecryptedRequestingMember.newBuilder()
-                                        .setUuid(UuidUtil.toByteString(uuid))
+                                        .setAciBytes(aci.toByteString())
                                         .setProfileKey(ByteString.copyFrom(profileKey.serialize()))
                                         .build();
       }
     }
 
-    private ProfileKey decryptProfileKey(ByteString profileKey, UUID uuid) throws VerificationFailedException, InvalidGroupStateException {
+    private ProfileKey decryptProfileKey(ByteString profileKey, ACI aci) throws VerificationFailedException, InvalidGroupStateException {
       try {
         ProfileKeyCiphertext profileKeyCiphertext = new ProfileKeyCiphertext(profileKey.toByteArray());
-        return clientZkGroupCipher.decryptProfileKey(profileKeyCiphertext, uuid);
+        return clientZkGroupCipher.decryptProfileKey(profileKeyCiphertext, aci.getLibSignalAci());
       } catch (InvalidInputException e) {
         throw new InvalidGroupStateException(e);
       }
     }
 
-    private ByteString decryptProfileKeyToByteString(ByteString profileKey, UUID uuid) throws VerificationFailedException, InvalidGroupStateException {
-      return ByteString.copyFrom(decryptProfileKey(profileKey, uuid).serialize());
+    private ByteString decryptProfileKeyToByteString(ByteString profileKey, ACI aci) throws VerificationFailedException, InvalidGroupStateException {
+      return ByteString.copyFrom(decryptProfileKey(profileKey, aci).serialize());
     }
 
-    private ByteString decryptUuidToByteString(ByteString userId) throws InvalidGroupStateException, VerificationFailedException {
-      return UuidUtil.toByteString(decryptUuid(userId));
+    private ByteString decryptServiceIdToBinary(ByteString userId) throws InvalidGroupStateException, VerificationFailedException {
+      return decryptServiceId(userId).toByteString();
+    }
+
+    private ByteString decryptAciToBinary(ByteString userId) throws InvalidGroupStateException, VerificationFailedException {
+      return decryptAci(userId).toByteString();
     }
 
     // Visible for Testing
-    public ByteString encryptUuid(UUID uuid) {
-      return ByteString.copyFrom(clientZkGroupCipher.encryptUuid(uuid).serialize());
+    public ByteString encryptServiceId(ServiceId serviceId) {
+      return ByteString.copyFrom(clientZkGroupCipher.encrypt(serviceId.getLibSignalServiceId()).serialize());
     }
 
-    private UUID decryptUuid(ByteString userId) throws InvalidGroupStateException, VerificationFailedException {
+    private ServiceId decryptServiceId(ByteString userId) throws InvalidGroupStateException, VerificationFailedException {
       try {
-        return clientZkGroupCipher.decryptUuid(new UuidCiphertext(userId.toByteArray()));
+        return ServiceId.fromLibSignal(clientZkGroupCipher.decrypt(new UuidCiphertext(userId.toByteArray())));
       } catch (InvalidInputException e) {
         throw new InvalidGroupStateException(e);
       }
     }
 
+    private ACI decryptAci(ByteString userId) throws InvalidGroupStateException, VerificationFailedException {
+      ServiceId result = decryptServiceId(userId);
+      if (result instanceof ACI) {
+        return (ACI) result;
+      }
+      throw new InvalidGroupStateException();
+    }
+
     /**
-     * Attempts to decrypt a UUID, but will return {@link #UNKNOWN_UUID} if it cannot.
+     * Attempts to decrypt a UUID, but will return an ACI of {@link #UNKNOWN_UUID} if it cannot.
      */
-    private UUID decryptUuidOrUnknown(ByteString userId) {
+    private ServiceId decryptServiceIdOrUnknown(ByteString userId) {
       try {
-        return clientZkGroupCipher.decryptUuid(new UuidCiphertext(userId.toByteArray()));
+        return ServiceId.fromLibSignal(clientZkGroupCipher.decrypt(new UuidCiphertext(userId.toByteArray())));
       } catch (InvalidInputException | VerificationFailedException e) {
-        return UNKNOWN_UUID;
+        return ACI.UNKNOWN;
+      }
+    }
+
+    private ACI decryptAciOrUnknown(ByteString userId) {
+      try {
+        ServiceId result = ServiceId.fromLibSignal(clientZkGroupCipher.decrypt(new UuidCiphertext(userId.toByteArray())));
+        if (result instanceof ACI) {
+          return (ACI) result;
+        } else {
+          return ACI.UNKNOWN;
+        }
+      } catch (InvalidInputException | VerificationFailedException e) {
+        return ACI.UNKNOWN;
       }
     }
 
@@ -897,6 +1003,7 @@ public final class GroupsV2Operations {
       try {
         signature = new NotarySignature(groupChange.getServerSignature().toByteArray());
       } catch (InvalidInputException e) {
+        Log.w(TAG, "Invalid input while verifying group change", e);
         throw new VerificationFailedException();
       }
 
@@ -914,12 +1021,24 @@ public final class GroupsV2Operations {
       return GroupChange.Actions.parseFrom(groupChange.getActions());
     }
 
-    public GroupChange.Actions.Builder createChangeMemberRole(UUID uuid, Member.Role role) {
+    public GroupChange.Actions.Builder createChangeMemberRole(ACI memberAci, Member.Role role) {
       return GroupChange.Actions.newBuilder()
                                 .addModifyMemberRoles(GroupChange.Actions.ModifyMemberRoleAction.newBuilder()
-                                                                         .setUserId(encryptUuid(uuid))
+                                                                         .setUserId(encryptServiceId(memberAci))
                                                                          .setRole(role));
     }
+
+    public List<ServiceId> decryptAddMembers(List<GroupChange.Actions.AddMemberAction> addMembers) throws InvalidInputException, VerificationFailedException {
+      List<ServiceId> ids = new ArrayList<>(addMembers.size());
+      for (int i = 0; i < addMembers.size(); i++) {
+        GroupChange.Actions.AddMemberAction addMember                        = addMembers.get(i);
+        ProfileKeyCredentialPresentation    profileKeyCredentialPresentation = new ProfileKeyCredentialPresentation(addMember.getAdded().getPresentation().toByteArray());
+
+        ids.add(ServiceId.fromLibSignal(clientZkGroupCipher.decrypt(profileKeyCredentialPresentation.getUuidCiphertext())));
+      }
+      return ids;
+    }
+
   }
 
   public static class NewGroup {

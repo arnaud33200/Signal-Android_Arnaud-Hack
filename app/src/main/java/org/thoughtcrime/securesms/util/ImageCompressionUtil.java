@@ -8,14 +8,41 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.WorkerThread;
 
+import com.bumptech.glide.load.DataSource;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.load.engine.GlideException;
+import com.bumptech.glide.request.RequestListener;
+import com.bumptech.glide.request.target.Target;
 
+import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.mms.GlideApp;
 
 import java.io.ByteArrayOutputStream;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 public final class ImageCompressionUtil {
+
+  private static final String                  TAG                   = Log.tag(ImageCompressionUtil.class);
+  private static final RequestListener<Bitmap> bitmapRequestListener = new RequestListener<>() {
+    @Override
+    public boolean onLoadFailed(@Nullable GlideException e, Object model, Target<Bitmap> target, boolean isFirstResource) {
+      if (e != null) {
+        List<Throwable> causes = e.getRootCauses();
+        for (int i = 0, size = causes.size(); i < size; i++) {
+          Log.i(TAG, "Root cause (" + (i + 1) + " of " + size + ")", causes.get(i));
+        }
+      } else {
+        Log.e(TAG, "Loading failed: " + model);
+      }
+      return false;
+    }
+
+    @Override
+    public boolean onResourceReady(Bitmap resource, Object model, Target<Bitmap> target, DataSource dataSource, boolean isFirstResource) {
+      return false;
+    }
+  };
 
   private ImageCompressionUtil () {}
 
@@ -56,6 +83,7 @@ public final class ImageCompressionUtil {
     try {
       scaledBitmap = GlideApp.with(context.getApplicationContext())
                              .asBitmap()
+                             .addListener(bitmapRequestListener)
                              .load(glideModel)
                              .skipMemoryCache(true)
                              .diskCacheStrategy(DiskCacheStrategy.NONE)
@@ -63,6 +91,9 @@ public final class ImageCompressionUtil {
                              .submit(maxDimension, maxDimension)
                              .get();
     } catch (ExecutionException | InterruptedException e) {
+      if (e.getCause() instanceof GlideException) {
+        ((GlideException) e.getCause()).logRootCauses(TAG);
+      }
       throw new BitmapDecodingException(e);
     }
 
@@ -80,7 +111,11 @@ public final class ImageCompressionUtil {
   }
 
   private static @NonNull Bitmap.CompressFormat mimeTypeToCompressFormat(@NonNull String mimeType) {
-    if (MediaUtil.isJpegType(mimeType) || MediaUtil.isHeicType(mimeType) || MediaUtil.isHeifType(mimeType)) {
+    if (MediaUtil.isJpegType(mimeType) ||
+        MediaUtil.isHeicType(mimeType) ||
+        MediaUtil.isHeifType(mimeType) ||
+        MediaUtil.isAvifType(mimeType) ||
+        MediaUtil.isVideoType(mimeType)) {
       return Bitmap.CompressFormat.JPEG;
     } else {
       return Bitmap.CompressFormat.PNG;

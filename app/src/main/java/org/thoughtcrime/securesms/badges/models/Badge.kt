@@ -35,10 +35,13 @@ data class Badge(
   val imageDensity: String,
   val expirationTimestamp: Long,
   val visible: Boolean,
+  val duration: Long
 ) : Parcelable, Key {
 
   fun isExpired(): Boolean = expirationTimestamp < System.currentTimeMillis() && expirationTimestamp > 0
   fun isBoost(): Boolean = id == BOOST_BADGE_ID
+  fun isGift(): Boolean = id == GIFT_BADGE_ID
+  fun isSubscription(): Boolean = !isBoost() && !isGift()
 
   override fun updateDiskCacheKey(messageDigest: MessageDigest) {
     messageDigest.update(id.toByteArray(Key.CHARSET))
@@ -130,7 +133,7 @@ data class Badge(
         .downsample(DownsampleStrategy.NONE)
         .diskCacheStrategy(DiskCacheStrategy.NONE)
         .transform(
-          BadgeSpriteTransformation(BadgeSpriteTransformation.Size.BADGE_64, model.badge.imageDensity, ThemeUtil.isDarkTheme(context)),
+          BadgeSpriteTransformation(BadgeSpriteTransformation.Size.BADGE_64, model.badge.imageDensity, ThemeUtil.isDarkTheme(context))
         )
         .into(badge)
 

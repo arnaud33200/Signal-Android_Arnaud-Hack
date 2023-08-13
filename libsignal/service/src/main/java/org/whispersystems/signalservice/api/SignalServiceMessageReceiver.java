@@ -20,10 +20,14 @@ import org.whispersystems.signalservice.api.messages.SignalServiceStickerManifes
 import org.whispersystems.signalservice.api.profiles.ProfileAndCredential;
 import org.whispersystems.signalservice.api.profiles.SignalServiceProfile;
 import org.whispersystems.signalservice.api.push.ServiceId;
+import org.whispersystems.signalservice.api.push.ServiceId.ACI;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.api.push.exceptions.MissingConfigurationException;
 import org.whispersystems.signalservice.api.util.CredentialsProvider;
+import org.whispersystems.signalservice.internal.ServiceResponse;
 import org.whispersystems.signalservice.internal.configuration.SignalServiceConfiguration;
+import org.whispersystems.signalservice.internal.push.IdentityCheckRequest;
+import org.whispersystems.signalservice.internal.push.IdentityCheckResponse;
 import org.whispersystems.signalservice.internal.push.PushServiceSocket;
 import org.whispersystems.signalservice.internal.push.SignalServiceEnvelopeEntity;
 import org.whispersystems.signalservice.internal.push.SignalServiceMessagesResult;
@@ -31,8 +35,9 @@ import org.whispersystems.signalservice.internal.sticker.StickerProtos;
 import org.whispersystems.signalservice.internal.util.Util;
 import org.whispersystems.signalservice.internal.util.concurrent.FutureTransformers;
 import org.whispersystems.signalservice.internal.util.concurrent.ListenableFuture;
+import org.whispersystems.signalservice.internal.util.concurrent.SettableFuture;
+import org.whispersystems.signalservice.internal.websocket.ResponseMapper;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -42,6 +47,10 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+
+import javax.annotation.Nonnull;
+
+import io.reactivex.rxjava3.core.Single;
 
 /**
  * The primary interface for receiving Signal Service messages.
@@ -89,13 +98,22 @@ public class SignalServiceMessageReceiver {
                                                                 SignalServiceProfile.RequestType requestType,
                                                                 Locale locale)
   {
-    ServiceId serviceId = address.getServiceId();
 
     if (profileKey.isPresent()) {
-      if (requestType == SignalServiceProfile.RequestType.PROFILE_AND_CREDENTIAL) {
-        return socket.retrieveVersionedProfileAndCredential(serviceId.uuid(), profileKey.get(), unidentifiedAccess, locale);
+      ACI aci;
+      if (address.getServiceId() instanceof ACI) {
+        aci = (ACI) address.getServiceId();
       } else {
-        return FutureTransformers.map(socket.retrieveVersionedProfile(serviceId.uuid(), profileKey.get(), unidentifiedAccess, locale), profile -> {
+        // We shouldn't ever have a profile key for a non-ACI.
+        SettableFuture<ProfileAndCredential> result = new SettableFuture<>();
+        result.setException(new ClassCastException("retrieving a versioned profile requires an ACI"));
+        return result;
+      }
+
+      if (requestType == SignalServiceProfile.RequestType.PROFILE_AND_CREDENTIAL) {
+        return socket.retrieveVersionedProfileAndCredential(aci, profileKey.get(), unidentifiedAccess, locale);
+      } else {
+        return FutureTransformers.map(socket.retrieveVersionedProfile(aci, profileKey.get(), unidentifiedAccess, locale), profile -> {
           return new ProfileAndCredential(profile,
                                           SignalServiceProfile.RequestType.PROFILE,
                                           Optional.empty());
@@ -110,12 +128,6 @@ public class SignalServiceMessageReceiver {
     }
   }
 
-  public SignalServiceProfile retrieveProfileByUsername(String username, Optional<UnidentifiedAccess> unidentifiedAccess, Locale locale)
-      throws IOException
-  {
-    return socket.retrieveProfileByUsername(username, unidentifiedAccess, locale);
-  }
-
   public InputStream retrieveProfileAvatar(String path, File destination, ProfileKey profileKey, long maxSizeBytes)
       throws IOException
   {
@@ -128,6 +140,10 @@ public class SignalServiceMessageReceiver {
   {
     socket.retrieveProfileAvatar(path, destination, maxSizeBytes);
     return new FileInputStream(destination);
+  }
+
+  public Single<ServiceResponse<IdentityCheckResponse>> performIdentityCheck(@Nonnull IdentityCheckRequest request, @Nonnull Optional<UnidentifiedAccess> unidentifiedAccess, @Nonnull ResponseMapper<IdentityCheckResponse> responseMapper) {
+    return socket.performIdentityCheck(request, unidentifiedAccess, responseMapper);
   }
 
   /**
@@ -148,7 +164,7 @@ public class SignalServiceMessageReceiver {
     if (!pointer.getDigest().isPresent()) throw new InvalidMessageException("No attachment digest!");
 
     socket.retrieveAttachment(pointer.getCdnNumber(), pointer.getRemoteId(), destination, maxSizeBytes, listener);
-    return AttachmentCipherInputStream.createForAttachment(destination, pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get());
+    return AttachmentCipherInputStream.createForAttachment(destination, pointer.getSize().orElse(0), pointer.getKey(), pointer.getDigest().get(), pointer.getIncrementalDigest().orElse(new byte[0]));
   }
 
   public InputStream retrieveSticker(byte[] packId, byte[] packKey, int stickerId)
@@ -173,11 +189,8 @@ public class SignalServiceMessageReceiver {
     byte[] manifestBytes = socket.retrieveStickerManifest(packId);
 
     InputStream           cipherStream = AttachmentCipherInputStream.createForStickerData(manifestBytes, packKey);
-    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
 
-    Util.copy(cipherStream, outputStream);
-
-    StickerProtos.Pack                             pack     = StickerProtos.Pack.parseFrom(outputStream.toByteArray());
+    StickerProtos.Pack                             pack     = StickerProtos.Pack.parseFrom(Util.readFullyAsBytes(cipherStream));
     List<SignalServiceStickerManifest.StickerInfo> stickers = new ArrayList<>(pack.getStickersCount());
     SignalServiceStickerManifest.StickerInfo       cover    = pack.hasCover() ? new SignalServiceStickerManifest.StickerInfo(pack.getCover().getId(), pack.getCover().getEmoji(), pack.getCover().getContentType())
                                                                           : null;
@@ -189,15 +202,11 @@ public class SignalServiceMessageReceiver {
     return new SignalServiceStickerManifest(pack.getTitle(), pack.getAuthor(), cover, stickers);
   }
 
-  public List<SignalServiceEnvelope> retrieveMessages() throws IOException {
-    return retrieveMessages(new NullMessageReceivedCallback());
-  }
-
-  public List<SignalServiceEnvelope> retrieveMessages(MessageReceivedCallback callback)
+  public List<SignalServiceEnvelope> retrieveMessages(boolean allowStories, MessageReceivedCallback callback)
       throws IOException
   {
     List<SignalServiceEnvelope> results       = new LinkedList<>();
-    SignalServiceMessagesResult messageResult = socket.getMessages();
+    SignalServiceMessagesResult messageResult = socket.getMessages(allowStories);
 
     for (SignalServiceEnvelopeEntity entity : messageResult.getEnvelopes()) {
       SignalServiceEnvelope envelope;
@@ -208,21 +217,25 @@ public class SignalServiceMessageReceiver {
                                              Optional.of(address),
                                              entity.getSourceDevice(),
                                              entity.getTimestamp(),
-                                             entity.getMessage(),
                                              entity.getContent(),
                                              entity.getServerTimestamp(),
                                              messageResult.getServerDeliveredTimestamp(),
                                              entity.getServerUuid(),
-                                             entity.getDestinationUuid());
+                                             entity.getDestinationUuid(),
+                                             entity.isUrgent(),
+                                             entity.isStory(),
+                                             entity.getReportSpamToken());
       } else {
         envelope = new SignalServiceEnvelope(entity.getType(),
                                              entity.getTimestamp(),
-                                             entity.getMessage(),
                                              entity.getContent(),
                                              entity.getServerTimestamp(),
                                              messageResult.getServerDeliveredTimestamp(),
                                              entity.getServerUuid(),
-                                             entity.getDestinationUuid());
+                                             entity.getDestinationUuid(),
+                                             entity.isUrgent(),
+                                             entity.isStory(),
+                                             entity.getReportSpamToken());
       }
 
       callback.onMessage(envelope);

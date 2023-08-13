@@ -67,10 +67,6 @@ public abstract class ServiceResponseProcessor<T> {
     return response.getStatus() == 401 || response.getStatus() == 403;
   }
 
-  protected boolean captchaRequired() {
-    return response.getStatus() == 402;
-  }
-
   protected boolean notFound() {
     return response.getStatus() == 404;
   }
@@ -125,5 +121,11 @@ public abstract class ServiceResponseProcessor<T> {
     return error instanceof IOException ||
            error instanceof TimeoutException ||
            error instanceof InterruptedException;
+  }
+
+  public static final class DefaultProcessor<T> extends ServiceResponseProcessor<T> {
+    public DefaultProcessor(ServiceResponse<T> response) {
+      super(response);
+    }
   }
 }

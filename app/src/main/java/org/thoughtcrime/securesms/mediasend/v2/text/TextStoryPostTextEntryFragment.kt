@@ -33,8 +33,10 @@ import org.thoughtcrime.securesms.scribbles.HSVColorSlider.getColor
 import org.thoughtcrime.securesms.scribbles.HSVColorSlider.setColor
 import org.thoughtcrime.securesms.scribbles.HSVColorSlider.setUpForColor
 import org.thoughtcrime.securesms.util.FeatureFlags
+import org.thoughtcrime.securesms.util.TextSecurePreferences
 import org.thoughtcrime.securesms.util.ViewUtil
 import org.thoughtcrime.securesms.util.fragments.findListener
+import org.thoughtcrime.securesms.util.setIncognitoKeyboardEnabled
 import java.util.Locale
 
 /**
@@ -117,13 +119,14 @@ class TextStoryPostTextEntryFragment : KeyboardEntryDialogFragment(
       viewModel.setTemporaryBody(text?.toString() ?: "")
     }
     input.setText(viewModel.getBody())
+    input.setIncognitoKeyboardEnabled(TextSecurePreferences.isIncognitoKeyboardEnabled(requireContext()))
   }
 
   private fun presentHint() {
     if (TextUtils.isEmpty(input.text)) {
       input.alpha = 0.6f
       if (input.filters.contains(allCapsFilter)) {
-        input.hint = getString(R.string.TextStoryPostTextEntryFragment__add_text).toUpperCase(Locale.getDefault())
+        input.hint = getString(R.string.TextStoryPostTextEntryFragment__add_text).uppercase(Locale.getDefault())
       } else {
         input.setHint(R.string.TextStoryPostTextEntryFragment__add_text)
       }

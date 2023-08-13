@@ -31,6 +31,7 @@ import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.banne
 import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.member;
 import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.newProfileKey;
 import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.pendingMember;
+import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.pendingPniAciMember;
 import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.randomProfileKey;
 import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.requestingMember;
 import static org.whispersystems.signalservice.api.groupsv2.ProtoTestUtils.withProfileKey;
@@ -48,7 +49,7 @@ public final class DecryptedGroupUtil_apply_Test {
     int maxFieldFound = getMaxDeclaredFieldNumber(DecryptedGroupChange.class);
 
     assertEquals("DecryptedGroupUtil and its tests need updating to account for new fields on " + DecryptedGroupChange.class.getName(),
-                 23, maxFieldFound);
+                 24, maxFieldFound);
   }
 
   @Test
@@ -145,7 +146,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                                      .build(),
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(14)
-                                                                           .addDeleteMembers(member1.getUuid())
+                                                                           .addDeleteMembers(member1.getAciBytes())
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
@@ -167,8 +168,8 @@ public final class DecryptedGroupUtil_apply_Test {
                                                                      .build(),
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(14)
-                                                                           .addDeleteMembers(member1.getUuid())
-                                                                           .addDeleteMembers(member2.getUuid())
+                                                                           .addDeleteMembers(member1.getAciBytes())
+                                                                           .addDeleteMembers(member2.getAciBytes())
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
@@ -188,7 +189,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                                      .build(),
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(14)
-                                                                           .addDeleteMembers(member2.getUuid())
+                                                                           .addDeleteMembers(member2.getAciBytes())
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
@@ -210,8 +211,8 @@ public final class DecryptedGroupUtil_apply_Test {
                                                                      .build(),
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(14)
-                                                                           .addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder().setUuid(member1.getUuid()).setRole(Member.Role.ADMINISTRATOR))
-                                                                           .addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder().setUuid(member2.getUuid()).setRole(Member.Role.DEFAULT))
+                                                                           .addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder().setAciBytes(member1.getAciBytes()).setRole(Member.Role.ADMINISTRATOR))
+                                                                           .addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder().setAciBytes(member2.getAciBytes()).setRole(Member.Role.DEFAULT))
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
@@ -235,7 +236,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                  .setRevision(14)
                                                  .addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder()
                                                                                                 .setRole(Member.Role.ADMINISTRATOR)
-                                                                                                .setUuid(member2.getUuid())
+                                                                                                .setAciBytes(member2.getAciBytes())
                                                                                                 .build())
                                                  .build());
   }
@@ -251,7 +252,7 @@ public final class DecryptedGroupUtil_apply_Test {
                              DecryptedGroupChange.newBuilder()
                                                  .setRevision(14)
                                                  .addModifyMemberRoles(DecryptedModifyMemberRole.newBuilder()
-                                                                                                .setUuid(member1.getUuid())
+                                                                                                .setAciBytes(member1.getAciBytes())
                                                                                                 .build())
                                                  .build());
   }
@@ -320,7 +321,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(14)
                                                                            .addModifiedProfileKeys(DecryptedMember.newBuilder(DecryptedMember.newBuilder()
-                                                                                                                                             .setUuid(UuidUtil.toByteString(adminUuid))
+                                                                                                                                             .setAciBytes(UuidUtil.toByteString(adminUuid))
                                                                                                                                              .build())
                                                                                                                    .setProfileKey(ByteString.copyFrom(profileKey2b.serialize())))
                                                                            .build());
@@ -410,7 +411,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(11)
                                                                            .addDeletePendingMembers(DecryptedPendingMemberRemoval.newBuilder()
-                                                                                                                                 .setUuidCipherText(ProtoTestUtils.encrypt(pendingUuid))
+                                                                                                                                 .setServiceIdCipherText(ProtoTestUtils.encrypt(pendingUuid))
                                                                                                                                  .build())
                                                                            .build());
 
@@ -433,7 +434,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(11)
                                                                            .addDeletePendingMembers(DecryptedPendingMemberRemoval.newBuilder()
-                                                                                                                                 .setUuidCipherText(ProtoTestUtils.encrypt(pendingUuid))
+                                                                                                                                 .setServiceIdCipherText(ProtoTestUtils.encrypt(pendingUuid))
                                                                                                                                  .build())
                                                                            .build());
 
@@ -784,7 +785,7 @@ public final class DecryptedGroupUtil_apply_Test {
                                                                      .build(),
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(14)
-                                                                           .addDeleteRequestingMembers(member1.getUuid())
+                                                                           .addDeleteRequestingMembers(member1.getAciBytes())
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
@@ -816,10 +817,10 @@ public final class DecryptedGroupUtil_apply_Test {
                                                                            .setRevision(14)
                                                                            .addPromoteRequestingMembers(DecryptedApproveMember.newBuilder()
                                                                                                                               .setRole(Member.Role.DEFAULT)
-                                                                                                                              .setUuid(member1.getUuid()))
+                                                                                                                              .setAciBytes(member1.getAciBytes()))
                                                                            .addPromoteRequestingMembers(DecryptedApproveMember.newBuilder()
                                                                                                                               .setRole(Member.Role.ADMINISTRATOR)
-                                                                                                                              .setUuid(member2.getUuid()))
+                                                                                                                              .setAciBytes(member2.getAciBytes()))
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
@@ -843,7 +844,7 @@ public final class DecryptedGroupUtil_apply_Test {
                              DecryptedGroupChange.newBuilder()
                                                  .setRevision(14)
                                                  .addPromoteRequestingMembers(DecryptedApproveMember.newBuilder()
-                                                                                                    .setUuid(member.getUuid()))
+                                                                                                    .setAciBytes(member.getAciBytes()))
                                                  .build());
   }
 
@@ -948,13 +949,40 @@ public final class DecryptedGroupUtil_apply_Test {
                                                        DecryptedGroupChange.newBuilder()
                                                                            .setRevision(11)
                                                                            .addDeleteBannedMembers(DecryptedBannedMember.newBuilder()
-                                                                                                                        .setUuid(UuidUtil.toByteString(bannedUuid))
+                                                                                                                        .setServiceIdBytes(UuidUtil.toByteString(bannedUuid))
                                                                                                                         .build())
                                                                            .build());
 
     assertEquals(DecryptedGroup.newBuilder()
                                .setRevision(11)
                                .addMembers(member1)
+                               .build(),
+                 newGroup);
+  }
+
+  @Test
+  public void promote_pending_member_pni_aci() throws NotAbleToApplyGroupV2ChangeException {
+    ProfileKey             profileKey2  = randomProfileKey();
+    DecryptedMember        member1      = member(UUID.randomUUID());
+    UUID                   pending2Aci  = UUID.randomUUID();
+    UUID                   pending2Pni  = UUID.randomUUID();
+    DecryptedPendingMember pending2     = pendingMember(pending2Pni);
+    DecryptedMember        member2      = pendingPniAciMember(pending2Aci, pending2Pni, profileKey2);
+
+    DecryptedGroup newGroup = DecryptedGroupUtil.apply(DecryptedGroup.newBuilder()
+                                                                     .setRevision(10)
+                                                                     .addMembers(member1)
+                                                                     .addPendingMembers(pending2)
+                                                                     .build(),
+                                                       DecryptedGroupChange.newBuilder()
+                                                                           .setRevision(11)
+                                                                           .addPromotePendingPniAciMembers(member2)
+                                                                           .build());
+
+    assertEquals(DecryptedGroup.newBuilder()
+                               .setRevision(11)
+                               .addMembers(member1)
+                               .addMembers(member2)
                                .build(),
                  newGroup);
   }

@@ -5,13 +5,16 @@ import android.content.Context;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import org.signal.core.util.StringUtil;
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.recipients.Recipient;
+import org.thoughtcrime.securesms.util.FeatureFlags;
 import org.whispersystems.signalservice.api.storage.SignalAccountRecord;
 import org.whispersystems.signalservice.api.storage.SignalAccountRecord.PinnedConversation;
 import org.whispersystems.signalservice.api.util.OptionalUtil;
 import org.whispersystems.signalservice.internal.storage.protos.AccountRecord;
+import org.whispersystems.signalservice.internal.storage.protos.OptionalBool;
 
 import java.util.Arrays;
 import java.util.List;
@@ -92,6 +95,13 @@ public class AccountRecordProcessor extends DefaultStorageRecordProcessor<Signal
       subscriber = local.getSubscriber();
     }
 
+    OptionalBool storyViewReceiptsState;
+    if (remote.getStoryViewReceiptsState() == OptionalBool.UNSET) {
+      storyViewReceiptsState = local.getStoryViewReceiptsState();
+    } else {
+      storyViewReceiptsState = remote.getStoryViewReceiptsState();
+    }
+
     byte[]                               unknownFields                 = remote.serializeUnknownFields();
     String                               avatarUrlPath                 = OptionalUtil.or(remote.getAvatarUrlPath(), local.getAvatarUrlPath()).orElse("");
     byte[]                               profileKey                    = OptionalUtil.or(remote.getProfileKey(), local.getProfileKey()).orElse(null);
@@ -107,43 +117,61 @@ public class AccountRecordProcessor extends DefaultStorageRecordProcessor<Signal
     boolean                              preferContactAvatars          = remote.isPreferContactAvatars();
     int                                  universalExpireTimer          = remote.getUniversalExpireTimer();
     boolean                              primarySendsSms               = SignalStore.account().isPrimaryDevice() ? local.isPrimarySendsSms() : remote.isPrimarySendsSms();
-    String                               e164                          = SignalStore.account().isPrimaryDevice() ? local.getE164() : remote.getE164();
+    String                               e164                          = SignalStore.account().isPrimaryDevice() && (!FeatureFlags.phoneNumberPrivacy() || !self.getPnpCapability().isSupported()) ? local.getE164() : remote.getE164();
     List<String>                         defaultReactions              = remote.getDefaultReactions().size() > 0 ? remote.getDefaultReactions() : local.getDefaultReactions();
     boolean                              displayBadgesOnProfile        = remote.isDisplayBadgesOnProfile();
     boolean                              subscriptionManuallyCancelled = remote.isSubscriptionManuallyCancelled();
-    boolean                              matchesRemote                 = doParamsMatch(remote, unknownFields, givenName, familyName, avatarUrlPath, profileKey, noteToSelfArchived, noteToSelfForcedUnread, readReceipts, typingIndicators, sealedSenderIndicators, linkPreviews, phoneNumberSharingMode, unlisted, pinnedConversations, preferContactAvatars, payments, universalExpireTimer, primarySendsSms, e164, defaultReactions, subscriber, displayBadgesOnProfile, subscriptionManuallyCancelled);
-    boolean                              matchesLocal                  = doParamsMatch(local, unknownFields, givenName, familyName, avatarUrlPath, profileKey, noteToSelfArchived, noteToSelfForcedUnread, readReceipts, typingIndicators, sealedSenderIndicators, linkPreviews, phoneNumberSharingMode, unlisted, pinnedConversations, preferContactAvatars, payments, universalExpireTimer, primarySendsSms, e164, defaultReactions, subscriber, displayBadgesOnProfile, subscriptionManuallyCancelled);
+    boolean                              keepMutedChatsArchived        = remote.isKeepMutedChatsArchived();
+    boolean                              hasSetMyStoriesPrivacy        = remote.hasSetMyStoriesPrivacy();
+    boolean                              hasViewedOnboardingStory      = remote.hasViewedOnboardingStory() || local.hasViewedOnboardingStory();
+    boolean                              storiesDisabled               = remote.isStoriesDisabled();
+    boolean                              hasReadOnboardingStory        = remote.hasReadOnboardingStory() || remote.hasViewedOnboardingStory() || local.hasReadOnboardingStory() || local.hasViewedOnboardingStory() ;
+    boolean                              hasSeenGroupStoryEducation    = remote.hasSeenGroupStoryEducationSheet() || local.hasSeenGroupStoryEducationSheet();
+    String                               username                      = !StringUtil.isEmpty(remote.getUsername()) ? remote.getUsername() : local.getUsername();
+    boolean                              matchesRemote                 = doParamsMatch(remote, unknownFields, givenName, familyName, avatarUrlPath, profileKey, noteToSelfArchived, noteToSelfForcedUnread, readReceipts, typingIndicators, sealedSenderIndicators, linkPreviews, phoneNumberSharingMode, unlisted, pinnedConversations, preferContactAvatars, payments, universalExpireTimer, primarySendsSms, e164, defaultReactions, subscriber, displayBadgesOnProfile, subscriptionManuallyCancelled, keepMutedChatsArchived, hasSetMyStoriesPrivacy, hasViewedOnboardingStory, storiesDisabled, storyViewReceiptsState, hasReadOnboardingStory, username);
+    boolean                              matchesLocal                  = doParamsMatch(local, unknownFields, givenName, familyName, avatarUrlPath, profileKey, noteToSelfArchived, noteToSelfForcedUnread, readReceipts, typingIndicators, sealedSenderIndicators, linkPreviews, phoneNumberSharingMode, unlisted, pinnedConversations, preferContactAvatars, payments, universalExpireTimer, primarySendsSms, e164, defaultReactions, subscriber, displayBadgesOnProfile, subscriptionManuallyCancelled, keepMutedChatsArchived, hasSetMyStoriesPrivacy, hasViewedOnboardingStory, storiesDisabled, storyViewReceiptsState, hasReadOnboardingStory, username);
 
     if (matchesRemote) {
       return remote;
     } else if (matchesLocal) {
       return local;
     } else {
-      return new SignalAccountRecord.Builder(keyGenerator.generate(), unknownFields)
-                                    .setGivenName(givenName)
-                                    .setFamilyName(familyName)
-                                    .setAvatarUrlPath(avatarUrlPath)
-                                    .setProfileKey(profileKey)
-                                    .setNoteToSelfArchived(noteToSelfArchived)
-                                    .setNoteToSelfForcedUnread(noteToSelfForcedUnread)
-                                    .setReadReceiptsEnabled(readReceipts)
-                                    .setTypingIndicatorsEnabled(typingIndicators)
-                                    .setSealedSenderIndicatorsEnabled(sealedSenderIndicators)
-                                    .setLinkPreviewsEnabled(linkPreviews)
-                                    .setUnlistedPhoneNumber(unlisted)
-                                    .setPhoneNumberSharingMode(phoneNumberSharingMode)
-                                    .setUnlistedPhoneNumber(unlisted)
-                                    .setPinnedConversations(pinnedConversations)
-                                    .setPreferContactAvatars(preferContactAvatars)
-                                    .setPayments(payments.isEnabled(), payments.getEntropy().orElse(null))
-                                    .setUniversalExpireTimer(universalExpireTimer)
-                                    .setPrimarySendsSms(primarySendsSms)
-                                    .setE164(e164)
-                                    .setDefaultReactions(defaultReactions)
-                                    .setSubscriber(subscriber)
-                                    .setDisplayBadgesOnProfile(displayBadgesOnProfile)
-                                    .setSubscriptionManuallyCancelled(subscriptionManuallyCancelled)
-                                    .build();
+      SignalAccountRecord.Builder builder = new SignalAccountRecord.Builder(keyGenerator.generate(), unknownFields)
+                                                                   .setGivenName(givenName)
+                                                                   .setFamilyName(familyName)
+                                                                   .setAvatarUrlPath(avatarUrlPath)
+                                                                   .setProfileKey(profileKey)
+                                                                   .setNoteToSelfArchived(noteToSelfArchived)
+                                                                   .setNoteToSelfForcedUnread(noteToSelfForcedUnread)
+                                                                   .setReadReceiptsEnabled(readReceipts)
+                                                                   .setTypingIndicatorsEnabled(typingIndicators)
+                                                                   .setSealedSenderIndicatorsEnabled(sealedSenderIndicators)
+                                                                   .setLinkPreviewsEnabled(linkPreviews)
+                                                                   .setUnlistedPhoneNumber(unlisted)
+                                                                   .setPhoneNumberSharingMode(phoneNumberSharingMode)
+                                                                   .setUnlistedPhoneNumber(unlisted)
+                                                                   .setPinnedConversations(pinnedConversations)
+                                                                   .setPreferContactAvatars(preferContactAvatars)
+                                                                   .setPayments(payments.isEnabled(), payments.getEntropy().orElse(null))
+                                                                   .setUniversalExpireTimer(universalExpireTimer)
+                                                                   .setPrimarySendsSms(primarySendsSms)
+                                                                   .setDefaultReactions(defaultReactions)
+                                                                   .setSubscriber(subscriber)
+                                                                   .setDisplayBadgesOnProfile(displayBadgesOnProfile)
+                                                                   .setSubscriptionManuallyCancelled(subscriptionManuallyCancelled)
+                                                                   .setKeepMutedChatsArchived(keepMutedChatsArchived)
+                                                                   .setHasSetMyStoriesPrivacy(hasSetMyStoriesPrivacy)
+                                                                   .setHasViewedOnboardingStory(hasViewedOnboardingStory)
+                                                                   .setStoriesDisabled(storiesDisabled)
+                                                                   .setHasReadOnboardingStory(hasReadOnboardingStory)
+                                                                   .setHasSeenGroupStoryEducationSheet(hasSeenGroupStoryEducation)
+                                                                   .setUsername(username);
+
+      if (!FeatureFlags.phoneNumberPrivacy() || !self.getPnpCapability().isSupported()) {
+        builder.setE164(e164);
+      }
+
+      return builder.build();
     }
   }
 
@@ -185,7 +213,14 @@ public class AccountRecordProcessor extends DefaultStorageRecordProcessor<Signal
                                        @NonNull List <String> defaultReactions,
                                        @NonNull SignalAccountRecord.Subscriber subscriber,
                                        boolean displayBadgesOnProfile,
-                                       boolean subscriptionManuallyCancelled)
+                                       boolean subscriptionManuallyCancelled,
+                                       boolean keepMutedChatsArchived,
+                                       boolean hasSetMyStoriesPrivacy,
+                                       boolean hasViewedOnboardingStory,
+                                       boolean storiesDisabled,
+                                       @NonNull OptionalBool storyViewReceiptsState,
+                                       boolean hasReadOnboardingStory,
+                                       @Nullable String username)
   {
     return Arrays.equals(contact.serializeUnknownFields(), unknownFields)        &&
            Objects.equals(contact.getGivenName().orElse(""), givenName)          &&
@@ -209,6 +244,13 @@ public class AccountRecordProcessor extends DefaultStorageRecordProcessor<Signal
            Objects.equals(contact.getPinnedConversations(), pinnedConversations) &&
            Objects.equals(contact.getSubscriber(), subscriber)                   &&
            contact.isDisplayBadgesOnProfile() == displayBadgesOnProfile          &&
-           contact.isSubscriptionManuallyCancelled() == subscriptionManuallyCancelled;
+           contact.isSubscriptionManuallyCancelled() == subscriptionManuallyCancelled &&
+           contact.isKeepMutedChatsArchived() == keepMutedChatsArchived &&
+           contact.hasSetMyStoriesPrivacy() == hasSetMyStoriesPrivacy &&
+           contact.hasViewedOnboardingStory() == hasViewedOnboardingStory &&
+           contact.isStoriesDisabled() == storiesDisabled &&
+           contact.getStoryViewReceiptsState().equals(storyViewReceiptsState) &&
+           contact.hasReadOnboardingStory() == hasReadOnboardingStory &&
+           Objects.equals(contact.getUsername(), username);
   }
 }

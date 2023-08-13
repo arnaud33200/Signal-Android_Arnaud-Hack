@@ -12,19 +12,22 @@ import androidx.core.util.Consumer;
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 
 import org.signal.core.util.Hex;
+import org.signal.core.util.Result;
 import org.signal.core.util.concurrent.SignalExecutors;
 import org.signal.core.util.logging.Log;
 import org.signal.libsignal.protocol.InvalidMessageException;
 import org.signal.libsignal.protocol.util.Pair;
 import org.signal.libsignal.zkgroup.VerificationFailedException;
 import org.signal.libsignal.zkgroup.groups.GroupMasterKey;
+import org.signal.ringrtc.CallLinkRootKey;
 import org.signal.storageservice.protos.groups.local.DecryptedGroupJoinInfo;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.attachments.Attachment;
 import org.thoughtcrime.securesms.attachments.UriAttachment;
-import org.thoughtcrime.securesms.database.AttachmentDatabase;
-import org.thoughtcrime.securesms.database.GroupDatabase;
+import org.thoughtcrime.securesms.calls.links.CallLinks;
+import org.thoughtcrime.securesms.database.AttachmentTable;
 import org.thoughtcrime.securesms.database.SignalDatabase;
+import org.thoughtcrime.securesms.database.model.GroupRecord;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.groups.GroupId;
 import org.thoughtcrime.securesms.groups.GroupManager;
@@ -41,6 +44,8 @@ import org.thoughtcrime.securesms.net.UserAgentInterceptor;
 import org.thoughtcrime.securesms.profiles.AvatarHelper;
 import org.thoughtcrime.securesms.providers.BlobProvider;
 import org.thoughtcrime.securesms.recipients.Recipient;
+import org.thoughtcrime.securesms.service.webrtc.links.CallLinkCredentials;
+import org.thoughtcrime.securesms.service.webrtc.links.ReadCallLinkResult;
 import org.thoughtcrime.securesms.stickers.StickerRemoteUri;
 import org.thoughtcrime.securesms.stickers.StickerUrl;
 import org.thoughtcrime.securesms.util.AvatarUtil;
@@ -62,6 +67,9 @@ import java.io.InputStream;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 
+import io.reactivex.rxjava3.core.Single;
+import io.reactivex.rxjava3.disposables.Disposable;
+import io.reactivex.rxjava3.schedulers.Schedulers;
 import okhttp3.CacheControl;
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
@@ -86,6 +94,28 @@ public class LinkPreviewRepository {
                                   .build();
   }
 
+  public @NonNull Single<Result<LinkPreview, Error>> getLinkPreview(@NonNull String url) {
+    return Single.<Result<LinkPreview, Error>>create(emitter -> {
+      RequestController controller = getLinkPreview(ApplicationDependencies.getApplication(),
+                                                    url,
+                                                    new Callback() {
+                                                      @Override
+                                                      public void onSuccess(@NonNull LinkPreview linkPreview) {
+                                                        emitter.onSuccess(Result.success(linkPreview));
+                                                      }
+
+                                                      @Override
+                                                      public void onError(@NonNull Error error) {
+                                                        emitter.onSuccess(Result.failure(error));
+                                                      }
+                                                    });
+
+      if (controller != null) {
+        emitter.setCancellable(controller::cancel);
+      }
+    }).subscribeOn(Schedulers.io());
+  }
+
   @Nullable RequestController getLinkPreview(@NonNull Context context,
                                              @NonNull String url,
                                              @NonNull Callback callback)
@@ -108,6 +138,8 @@ public class LinkPreviewRepository {
       metadataController = fetchStickerPackLinkPreview(context, url, callback);
     } else if (GroupInviteLinkUrl.isGroupLink(url)) {
       metadataController = fetchGroupLinkPreview(context, url, callback);
+    } else if (CallLinks.isCallLink(url)) {
+      metadataController = fetchCallLinkPreview(context, url, callback);
     } else {
       metadataController = fetchMetadata(url, metadata -> {
         if (metadata.isEmpty()) {
@@ -182,9 +214,9 @@ public class LinkPreviewRepository {
     CallRequestController controller = new CallRequestController(call);
 
     SignalExecutors.UNBOUNDED.execute(() -> {
-      try {
-        Response response = call.execute();
+      try (Response response = call.execute()) {
         if (!response.isSuccessful() || response.body() == null) {
+          callback.accept(Optional.empty());
           return;
         }
 
@@ -270,6 +302,55 @@ public class LinkPreviewRepository {
     return () -> Log.i(TAG, "Cancelled sticker pack link preview fetch -- no effect.");
   }
 
+  private static RequestController fetchCallLinkPreview(@NonNull Context context,
+                                                        @NonNull String callLinkUrl,
+                                                        @NonNull Callback callback) {
+
+    CallLinkRootKey callLinkRootKey = CallLinks.parseUrl(callLinkUrl);
+    if (callLinkRootKey == null) {
+      callback.onError(Error.PREVIEW_NOT_AVAILABLE);
+      return () -> { };
+    }
+
+    Disposable disposable = ApplicationDependencies.getSignalCallManager()
+                                                   .getCallLinkManager()
+                                                   .readCallLink(new CallLinkCredentials(callLinkRootKey.getKeyBytes(), null))
+                                                   .observeOn(Schedulers.io())
+                                                   .subscribe(
+                                                        result -> {
+                                                          if (result instanceof ReadCallLinkResult.Success) {
+                                                            ReadCallLinkResult.Success success = (ReadCallLinkResult.Success) result;
+                                                            Log.i(TAG, "Successfully read call link.");
+
+                                                            if (((ReadCallLinkResult.Success) result).getCallLinkState().hasBeenRevoked()) {
+                                                              Log.i(TAG, "Call link has been revoked.");
+                                                              callback.onError(Error.PREVIEW_NOT_AVAILABLE);
+                                                              return;
+                                                            }
+
+                                                            // Note: thumbnails are generated recv-side using the CallLinkRootKey
+                                                            callback.onSuccess(new LinkPreview(
+                                                                callLinkUrl,
+                                                                success.getCallLinkState().getName(),
+                                                                "",
+                                                                0,
+                                                                Optional.empty()
+                                                            ));
+                                                          } else {
+                                                            ReadCallLinkResult.Failure failure = (ReadCallLinkResult.Failure) result;
+                                                            Log.w(TAG, "Failed to read call link: " + failure);
+                                                            callback.onError(Error.PREVIEW_NOT_AVAILABLE);
+                                                          }
+                                                        },
+                                                        error -> {
+                                                          Log.w(TAG, "An error occurred: ", error);
+                                                          callback.onError(Error.PREVIEW_NOT_AVAILABLE);
+                                                        }
+                                                    );
+
+    return disposable::dispose;
+  }
+
   private static RequestController fetchGroupLinkPreview(@NonNull Context context,
                                                          @NonNull String groupUrl,
                                                          @NonNull Callback callback)
@@ -282,14 +363,14 @@ public class LinkPreviewRepository {
         }
 
         GroupMasterKey                      groupMasterKey = groupInviteLinkUrl.getGroupMasterKey();
-        GroupId.V2                          groupId        = GroupId.v2(groupMasterKey);
-        Optional<GroupDatabase.GroupRecord> group          = SignalDatabase.groups().getGroup(groupId);
+        GroupId.V2            groupId = GroupId.v2(groupMasterKey);
+        Optional<GroupRecord> group   = SignalDatabase.groups().getGroup(groupId);
 
         if (group.isPresent()) {
           Log.i(TAG, "Creating preview for locally available group");
 
-          GroupDatabase.GroupRecord groupRecord = group.get();
-          String                    title       = groupRecord.getTitle();
+          GroupRecord groupRecord = group.get();
+          String      title       = groupRecord.getTitle();
           int                       memberCount = groupRecord.getMembers().size();
           String                    description = getMemberCountDescription(context, memberCount);
           Optional<Attachment>      thumbnail   = Optional.empty();
@@ -367,7 +448,7 @@ public class LinkPreviewRepository {
 
     return new UriAttachment(uri,
                              contentType,
-                             AttachmentDatabase.TRANSFER_PROGRESS_STARTED,
+                             AttachmentTable.TRANSFER_PROGRESS_STARTED,
                              bytes.length,
                              width,
                              height,

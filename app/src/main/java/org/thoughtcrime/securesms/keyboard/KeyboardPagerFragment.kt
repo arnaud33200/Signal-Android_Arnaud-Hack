@@ -7,18 +7,21 @@ import android.view.ViewGroup
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import org.thoughtcrime.securesms.R
+import org.thoughtcrime.securesms.components.InputAwareConstraintLayout
 import org.thoughtcrime.securesms.components.emoji.MediaKeyboard
 import org.thoughtcrime.securesms.keyboard.emoji.EmojiKeyboardPageFragment
 import org.thoughtcrime.securesms.keyboard.gif.GifKeyboardPageFragment
 import org.thoughtcrime.securesms.keyboard.sticker.StickerKeyboardPageFragment
+import org.thoughtcrime.securesms.util.ThemeUtil
 import org.thoughtcrime.securesms.util.ThemedFragment.themeResId
 import org.thoughtcrime.securesms.util.ThemedFragment.themedInflate
 import org.thoughtcrime.securesms.util.ThemedFragment.withTheme
+import org.thoughtcrime.securesms.util.WindowUtil
 import org.thoughtcrime.securesms.util.fragments.findListener
 import org.thoughtcrime.securesms.util.visible
 import kotlin.reflect.KClass
 
-class KeyboardPagerFragment : Fragment() {
+class KeyboardPagerFragment : Fragment(), InputAwareConstraintLayout.InputFragment {
 
   private lateinit var emojiButton: View
   private lateinit var stickerButton: View
@@ -49,6 +52,16 @@ class KeyboardPagerFragment : Fragment() {
     emojiButton.setOnClickListener { viewModel.switchToPage(KeyboardPage.EMOJI) }
     stickerButton.setOnClickListener { viewModel.switchToPage(KeyboardPage.STICKER) }
     gifButton.setOnClickListener { viewModel.switchToPage(KeyboardPage.GIF) }
+
+    onHiddenChanged(false)
+  }
+
+  override fun onHiddenChanged(hidden: Boolean) {
+    if (hidden) {
+      WindowUtil.setNavigationBarColor(requireActivity(), ThemeUtil.getThemedColor(requireContext(), android.R.attr.navigationBarColor))
+    } else {
+      WindowUtil.setNavigationBarColor(requireActivity(), ThemeUtil.getThemedColor(requireContext(), R.attr.mediaKeyboardBottomBarBackgroundColor))
+    }
   }
 
   @Suppress("DEPRECATION")
@@ -101,14 +114,20 @@ class KeyboardPagerFragment : Fragment() {
     transaction.commitAllowingStateLoss()
   }
 
-  fun show() {
+  override fun show() {
+    findListener<MediaKeyboard.MediaKeyboardListener>()?.onShown()
     if (isAdded && view != null) {
+      onHiddenChanged(false)
+
       viewModel.page().value?.let(this::onPageSelected)
     }
   }
 
-  fun hide() {
+  override fun hide() {
+    findListener<MediaKeyboard.MediaKeyboardListener>()?.onHidden()
     if (isAdded && view != null) {
+      onHiddenChanged(true)
+
       val transaction = childFragmentManager.beginTransaction()
       fragments.values.forEach { transaction.remove(it) }
       transaction.commitAllowingStateLoss()

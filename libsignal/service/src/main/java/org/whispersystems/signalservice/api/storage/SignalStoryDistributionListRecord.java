@@ -28,7 +28,7 @@ public class SignalStoryDistributionListRecord implements SignalRecord {
     this.id               = id;
     this.proto            = proto;
     this.hasUnknownFields = ProtoUtil.hasUnknownFields(proto);
-    this.recipients       = proto.getRecipientUuidsList()
+    this.recipients       = proto.getRecipientServiceIdsList()
                                  .stream()
                                  .map(ServiceId::parseOrNull)
                                  .filter(Objects::nonNull)
@@ -74,6 +74,10 @@ public class SignalStoryDistributionListRecord implements SignalRecord {
     return proto.getAllowsReplies();
   }
 
+  public boolean isBlockList() {
+    return proto.getIsBlockList();
+  }
+
   @Override
   public String describeDiff(SignalRecord other) {
     if (other instanceof SignalStoryDistributionListRecord) {
@@ -102,6 +106,10 @@ public class SignalStoryDistributionListRecord implements SignalRecord {
 
       if (this.allowsReplies() != that.allowsReplies()) {
         diff.add("AllowsReplies");
+      }
+
+      if (this.isBlockList() != that.isBlockList()) {
+        diff.add("BlockList");
       }
 
       return diff.toString();
@@ -149,10 +157,10 @@ public class SignalStoryDistributionListRecord implements SignalRecord {
     }
 
     public Builder setRecipients(List<SignalServiceAddress> recipients) {
-      builder.clearRecipientUuids();
-      builder.addAllRecipientUuids(recipients.stream()
-                                             .map(SignalServiceAddress::getIdentifier)
-                                             .collect(Collectors.toList()));
+      builder.clearRecipientServiceIds();
+      builder.addAllRecipientServiceIds(recipients.stream()
+                                                  .map(SignalServiceAddress::getIdentifier)
+                                                  .collect(Collectors.toList()));
       return this;
     }
 
@@ -163,6 +171,11 @@ public class SignalStoryDistributionListRecord implements SignalRecord {
 
     public Builder setAllowsReplies(boolean allowsReplies) {
       builder.setAllowsReplies(allowsReplies);
+      return this;
+    }
+
+    public Builder setIsBlockList(boolean isBlockList) {
+      builder.setIsBlockList(isBlockList);
       return this;
     }
 

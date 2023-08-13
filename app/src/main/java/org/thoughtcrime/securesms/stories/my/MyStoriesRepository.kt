@@ -5,10 +5,10 @@ import io.reactivex.rxjava3.core.Completable
 import io.reactivex.rxjava3.core.Observable
 import io.reactivex.rxjava3.schedulers.Schedulers
 import org.thoughtcrime.securesms.conversation.ConversationMessage
-import org.thoughtcrime.securesms.database.DatabaseObserver
+import org.thoughtcrime.securesms.database.GroupReceiptTable
+import org.thoughtcrime.securesms.database.RxDatabaseObserver
 import org.thoughtcrime.securesms.database.SignalDatabase
 import org.thoughtcrime.securesms.database.model.MessageRecord
-import org.thoughtcrime.securesms.dependencies.ApplicationDependencies
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.sms.MessageSender
 
@@ -23,39 +23,45 @@ class MyStoriesRepository(context: Context) {
   }
 
   fun getMyStories(): Observable<List<MyStoriesState.DistributionSet>> {
-    return Observable.create { emitter ->
-      fun refresh() {
+    return RxDatabaseObserver
+      .conversationList
+      .toObservable()
+      .map {
         val storiesMap = mutableMapOf<Recipient, List<MessageRecord>>()
-        SignalDatabase.mms.getAllOutgoingStories(true).use {
-          while (it.next != null) {
-            val messageRecord = it.current
-            val currentList = storiesMap[messageRecord.recipient] ?: emptyList()
-            storiesMap[messageRecord.recipient] = (currentList + messageRecord)
+        SignalDatabase.messages.getAllOutgoingStories(true, -1).use {
+          for (messageRecord in it) {
+            val currentList = storiesMap[messageRecord.toRecipient] ?: emptyList()
+            storiesMap[messageRecord.toRecipient] = (currentList + messageRecord)
           }
         }
 
-        emitter.onNext(storiesMap.map { (r, m) -> createDistributionSet(r, m) })
+        storiesMap.toSortedMap(MyStoryBiasComparator()).map { (r, m) -> createDistributionSet(r, m) }
       }
-
-      val observer = DatabaseObserver.Observer {
-        refresh()
-      }
-
-      ApplicationDependencies.getDatabaseObserver().registerConversationListObserver(observer)
-      emitter.setCancellable {
-        ApplicationDependencies.getDatabaseObserver().unregisterObserver(observer)
-      }
-
-      refresh()
-    }
   }
 
   private fun createDistributionSet(recipient: Recipient, messageRecords: List<MessageRecord>): MyStoriesState.DistributionSet {
     return MyStoriesState.DistributionSet(
       label = recipient.getDisplayName(context),
-      stories = messageRecords.map {
-        ConversationMessage.ConversationMessageFactory.createWithUnresolvedData(context, it)
+      stories = messageRecords.map { record ->
+        MyStoriesState.DistributionStory(
+          message = ConversationMessage.ConversationMessageFactory.createWithUnresolvedData(context, record, recipient),
+          views = SignalDatabase.groupReceipts.getGroupReceiptInfo(record.id).count { it.status == GroupReceiptTable.STATUS_VIEWED }
+        )
       }
     )
+  }
+
+  /**
+   * Biases "My Story" to the top of the list.
+   */
+  class MyStoryBiasComparator : Comparator<Recipient> {
+    override fun compare(o1: Recipient, o2: Recipient): Int {
+      return when {
+        o1 == o2 -> 0
+        o1.isMyStory -> -1
+        o2.isMyStory -> 1
+        else -> -1
+      }
+    }
   }
 }

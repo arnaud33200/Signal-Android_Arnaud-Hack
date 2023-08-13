@@ -19,7 +19,15 @@ import org.thoughtcrime.securesms.webrtc.audio.SignalAudioManager
  * inform us about changes in the telecom system. Created and returned by [AndroidCallConnectionService].
  */
 @RequiresApi(26)
-class AndroidCallConnection(private val context: Context, val recipientId: RecipientId, val isOutgoing: Boolean = false) : Connection() {
+class AndroidCallConnection(
+  private val context: Context,
+  private val recipientId: RecipientId,
+  isOutgoing: Boolean,
+  private val isVideoCall: Boolean
+) : Connection() {
+
+  private var needToResetAudioRoute = isOutgoing && !isVideoCall
+  private var initialAudioRoute: SignalAudioManager.AudioDevice? = null
 
   init {
     connectionProperties = PROPERTY_SELF_MANAGED
@@ -30,7 +38,7 @@ class AndroidCallConnection(private val context: Context, val recipientId: Recip
 
   override fun onShowIncomingCallUi() {
     Log.i(TAG, "onShowIncomingCallUi()")
-    WebRtcCallService.update(context, CallNotificationBuilder.TYPE_INCOMING_CONNECTING, recipientId)
+    WebRtcCallService.update(context, CallNotificationBuilder.TYPE_INCOMING_CONNECTING, recipientId, isVideoCall)
     setRinging()
   }
 
@@ -41,6 +49,16 @@ class AndroidCallConnection(private val context: Context, val recipientId: Recip
     val availableDevices = state.supportedRouteMask.toDevices()
 
     ApplicationDependencies.getSignalCallManager().onAudioDeviceChanged(activeDevice, availableDevices)
+
+    if (needToResetAudioRoute) {
+      if (initialAudioRoute == null) {
+        initialAudioRoute = activeDevice
+      } else if (activeDevice == SignalAudioManager.AudioDevice.SPEAKER_PHONE) {
+        Log.i(TAG, "Resetting audio route from SPEAKER_PHONE to $initialAudioRoute")
+        AndroidTelecomUtil.selectAudioDevice(recipientId, initialAudioRoute!!)
+        needToResetAudioRoute = false
+      }
+    }
   }
 
   override fun onAnswer(videoState: Int) {
@@ -49,7 +67,7 @@ class AndroidCallConnection(private val context: Context, val recipientId: Recip
       ApplicationDependencies.getSignalCallManager().acceptCall(false)
     } else {
       val intent = Intent(context, WebRtcCallActivity::class.java)
-      intent.action = WebRtcCallActivity.ANSWER_ACTION
+      intent.action = if (isVideoCall) WebRtcCallActivity.ANSWER_VIDEO_ACTION else WebRtcCallActivity.ANSWER_ACTION
       intent.flags = intent.flags or Intent.FLAG_ACTIVITY_NEW_TASK
       context.startActivity(intent)
     }

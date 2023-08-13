@@ -7,6 +7,9 @@ public enum MessageRequestState {
   /** No message request necessary */
   NONE,
 
+  /** No message request necessary as the user was hidden after accepting*/
+  NONE_HIDDEN,
+
   /** A user is blocked */
   BLOCKED_INDIVIDUAL,
 
@@ -35,5 +38,8 @@ public enum MessageRequestState {
   GROUP_V2_ADD,
 
   /** A message request is needed for an individual */
-  INDIVIDUAL
+  INDIVIDUAL,
+
+  /** A message request is needed for an individual since they have been hidden */
+  INDIVIDUAL_HIDDEN
 }

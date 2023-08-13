@@ -9,18 +9,20 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.SmsManager;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
+import org.signal.core.util.PendingIntentFlags;
 import org.signal.core.util.logging.Log;
-import org.thoughtcrime.securesms.database.MessageDatabase;
+import org.thoughtcrime.securesms.database.MessageTable;
 import org.thoughtcrime.securesms.database.NoSuchMessageException;
 import org.thoughtcrime.securesms.database.SignalDatabase;
-import org.thoughtcrime.securesms.database.model.SmsMessageRecord;
+import org.thoughtcrime.securesms.database.model.MessageRecord;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
-import org.thoughtcrime.securesms.jobmanager.Data;
+import org.thoughtcrime.securesms.jobmanager.JsonJobData;
 import org.thoughtcrime.securesms.jobmanager.Job;
 import org.thoughtcrime.securesms.jobmanager.impl.NetworkOrCellServiceConstraint;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
-import org.thoughtcrime.securesms.notifications.v2.NotificationThread;
+import org.thoughtcrime.securesms.notifications.v2.ConversationId;
 import org.thoughtcrime.securesms.phonenumbers.NumberUtil;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.service.SmsDeliveryListener;
@@ -56,10 +58,10 @@ public class SmsSendJob extends SendJob {
   }
 
   @Override
-  public @NonNull Data serialize() {
-    return new Data.Builder().putLong(KEY_MESSAGE_ID, messageId)
-                             .putInt(KEY_RUN_ATTEMPT, runAttempt)
-                             .build();
+  public @Nullable byte[] serialize() {
+    return new JsonJobData.Builder().putLong(KEY_MESSAGE_ID, messageId)
+                                    .putInt(KEY_RUN_ATTEMPT, runAttempt)
+                                    .serialize();
   }
 
   @Override
@@ -69,7 +71,7 @@ public class SmsSendJob extends SendJob {
 
   @Override
   public void onAdded() {
-    SignalDatabase.sms().markAsSending(messageId);
+    SignalDatabase.messages().markAsSending(messageId);
   }
 
   @Override
@@ -79,16 +81,16 @@ public class SmsSendJob extends SendJob {
       throw new TooManyRetriesException();
     }
 
-    MessageDatabase  database = SignalDatabase.sms();
-    SmsMessageRecord record   = database.getSmsMessage(messageId);
+    MessageTable  database = SignalDatabase.messages();
+    MessageRecord record   = database.getMessageRecord(messageId);
 
     if (!record.isPending() && !record.isFailed()) {
       warn(TAG, "Message " + messageId + " was already sent. Ignoring.");
       return;
     }
 
-    if (!record.getRecipient().hasSmsAddress()) {
-      throw new UndeliverableMessageException("Recipient didn't have an SMS address! " + record.getRecipient().getId());
+    if (!record.getToRecipient().hasSmsAddress()) {
+      throw new UndeliverableMessageException("Recipient didn't have an SMS address! " + record.getToRecipient().getId());
     }
 
     try {
@@ -97,8 +99,8 @@ public class SmsSendJob extends SendJob {
       log(TAG, String.valueOf(record.getDateSent()), "Sent message: " + messageId);
     } catch (UndeliverableMessageException ude) {
       warn(TAG, ude);
-      SignalDatabase.sms().markAsSentFailed(record.getId());
-      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, record.getRecipient(), NotificationThread.fromMessageRecord(record));
+      SignalDatabase.messages().markAsSentFailed(record.getId());
+      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, record.getToRecipient(), ConversationId.fromMessageRecord(record));
     }
   }
 
@@ -110,26 +112,26 @@ public class SmsSendJob extends SendJob {
   @Override
   public void onFailure() {
     warn(TAG, "onFailure() messageId: " + messageId);
-    long      threadId  = SignalDatabase.sms().getThreadIdForMessage(messageId);
+    long      threadId  = SignalDatabase.messages().getThreadIdForMessage(messageId);
     Recipient recipient = SignalDatabase.threads().getRecipientForThreadId(threadId);
 
-    SignalDatabase.sms().markAsSentFailed(messageId);
+    SignalDatabase.messages().markAsSentFailed(messageId);
 
     if (threadId != -1 && recipient != null) {
-      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, recipient, NotificationThread.forConversation(threadId));
+      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, recipient, ConversationId.forConversation(threadId));
     } else {
       Log.w(TAG, "Could not find message! threadId: " + threadId + ", recipient: " + (recipient != null ? recipient.getId().toString() : "null"));
     }
   }
 
-  private void deliver(SmsMessageRecord message)
+  private void deliver(MessageRecord message)
       throws UndeliverableMessageException
   {
     if (message.isSecure() || message.isKeyExchange() || message.isEndSession()) {
       throw new UndeliverableMessageException("Trying to send a secure SMS?");
     }
 
-    String recipient = message.getIndividualRecipient().requireSmsAddress();
+    String recipient = message.getToRecipient().requireSmsAddress();
 
     // See issue #1516 for bug report, and discussion on commits related to #4833 for problems
     // related to the original fix to #1516. This still may not be a correct fix if networks allow
@@ -182,7 +184,7 @@ public class SmsSendJob extends SendJob {
     for (String ignored : messages) {
       sentIntents.add(PendingIntent.getBroadcast(context, 0,
                                                  constructSentIntent(context, messageId, type, isMultipart),
-                                                 0));
+                                                 PendingIntentFlags.mutable()));
     }
 
     return sentIntents;
@@ -199,7 +201,7 @@ public class SmsSendJob extends SendJob {
     for (String ignored : messages) {
       deliveredIntents.add(PendingIntent.getBroadcast(context, 0,
                                                       constructDeliveredIntent(context, messageId, type, isMultipart),
-                                                      0));
+                                                      PendingIntentFlags.mutable()));
     }
 
     return deliveredIntents;
@@ -249,7 +251,8 @@ public class SmsSendJob extends SendJob {
 
   public static class Factory implements Job.Factory<SmsSendJob> {
     @Override
-    public @NonNull SmsSendJob create(@NonNull Parameters parameters, @NonNull org.thoughtcrime.securesms.jobmanager.Data data) {
+    public @NonNull SmsSendJob create(@NonNull Parameters parameters, @Nullable byte[] serializedData) {
+      JsonJobData data = JsonJobData.deserialize(serializedData);
       return new SmsSendJob(parameters, data.getLong(KEY_MESSAGE_ID), data.getInt(KEY_RUN_ATTEMPT));
     }
   }

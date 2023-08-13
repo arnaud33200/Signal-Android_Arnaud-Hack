@@ -1,9 +1,0 @@
-package org.thoughtcrime.securesms.sharing
-
-import android.net.Uri
-
-sealed class UnresolvedShareData {
-  data class ExternalMultiShare(val uris: List<Uri>) : UnresolvedShareData()
-  data class ExternalSingleShare(val uri: Uri, val mimeType: String?) : UnresolvedShareData()
-  data class ExternalPrimitiveShare(val text: CharSequence) : UnresolvedShareData()
-}

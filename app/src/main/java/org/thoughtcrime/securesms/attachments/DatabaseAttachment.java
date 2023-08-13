@@ -6,7 +6,7 @@ import androidx.annotation.Nullable;
 
 import org.thoughtcrime.securesms.audio.AudioHash;
 import org.thoughtcrime.securesms.blurhash.BlurHash;
-import org.thoughtcrime.securesms.database.AttachmentDatabase.TransformProperties;
+import org.thoughtcrime.securesms.database.AttachmentTable.TransformProperties;
 import org.thoughtcrime.securesms.mms.PartAuthority;
 import org.thoughtcrime.securesms.stickers.StickerLocator;
 
@@ -33,6 +33,7 @@ public class DatabaseAttachment extends Attachment {
                             String key,
                             String relay,
                             byte[] digest,
+                            byte[] incrementalDigest,
                             String fastPreflightId,
                             boolean voiceNote,
                             boolean borderless,
@@ -48,7 +49,7 @@ public class DatabaseAttachment extends Attachment {
                             int displayOrder,
                             long uploadTimestamp)
   {
-    super(contentType, transferProgress, size, fileName, cdnNumber, location, key, relay, digest, fastPreflightId, voiceNote, borderless, videoGif, width, height, quote, uploadTimestamp, caption, stickerLocator, blurHash, audioHash, transformProperties);
+    super(contentType, transferProgress, size, fileName, cdnNumber, location, key, relay, digest, incrementalDigest, fastPreflightId, voiceNote, borderless, videoGif, width, height, quote, uploadTimestamp, caption, stickerLocator, blurHash, audioHash, transformProperties);
     this.attachmentId = attachmentId;
     this.hasData      = hasData;
     this.hasThumbnail = hasThumbnail;

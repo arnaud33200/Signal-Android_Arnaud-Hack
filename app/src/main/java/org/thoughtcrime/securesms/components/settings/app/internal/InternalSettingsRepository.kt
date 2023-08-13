@@ -2,7 +2,7 @@ package org.thoughtcrime.securesms.components.settings.app.internal
 
 import android.content.Context
 import org.signal.core.util.concurrent.SignalExecutors
-import org.thoughtcrime.securesms.database.MessageDatabase
+import org.thoughtcrime.securesms.database.MessageTable
 import org.thoughtcrime.securesms.database.SignalDatabase
 import org.thoughtcrime.securesms.database.model.addStyle
 import org.thoughtcrime.securesms.database.model.databaseprotos.BodyRangeList
@@ -11,7 +11,7 @@ import org.thoughtcrime.securesms.emoji.EmojiFiles
 import org.thoughtcrime.securesms.jobs.AttachmentDownloadJob
 import org.thoughtcrime.securesms.jobs.CreateReleaseChannelJob
 import org.thoughtcrime.securesms.keyvalue.SignalStore
-import org.thoughtcrime.securesms.notifications.v2.NotificationThread
+import org.thoughtcrime.securesms.notifications.v2.ConversationId
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.releasechannel.ReleaseChannel
 
@@ -38,23 +38,23 @@ class InternalSettingsRepository(context: Context) {
       val recipientId = SignalStore.releaseChannelValues().releaseChannelRecipientId!!
       val threadId = SignalDatabase.threads.getOrCreateThreadIdFor(Recipient.resolved(recipientId))
 
-      val insertResult: MessageDatabase.InsertResult? = ReleaseChannel.insertAnnouncement(
+      val insertResult: MessageTable.InsertResult? = ReleaseChannel.insertReleaseChannelMessage(
         recipientId = recipientId,
         body = body,
         threadId = threadId,
         messageRanges = bodyRangeList.build(),
-        image = "https://via.placeholder.com/720x480",
-        imageWidth = 720,
-        imageHeight = 480
+        media = "/static/release-notes/signal.png",
+        mediaWidth = 1800,
+        mediaHeight = 720
       )
 
-      SignalDatabase.sms.insertBoostRequestMessage(recipientId, threadId)
+      SignalDatabase.messages.insertBoostRequestMessage(recipientId, threadId)
 
       if (insertResult != null) {
         SignalDatabase.attachments.getAttachmentsForMessage(insertResult.messageId)
           .forEach { ApplicationDependencies.getJobManager().add(AttachmentDownloadJob(insertResult.messageId, it.attachmentId, false)) }
 
-        ApplicationDependencies.getMessageNotifier().updateNotification(context, NotificationThread.forConversation(insertResult.threadId))
+        ApplicationDependencies.getMessageNotifier().updateNotification(context, ConversationId.forConversation(insertResult.threadId))
       }
     }
   }

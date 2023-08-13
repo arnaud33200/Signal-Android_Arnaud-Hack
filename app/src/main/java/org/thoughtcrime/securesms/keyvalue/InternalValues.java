@@ -4,6 +4,7 @@ import androidx.annotation.NonNull;
 
 import org.signal.ringrtc.CallManager;
 import org.thoughtcrime.securesms.BuildConfig;
+import org.thoughtcrime.securesms.util.Environment;
 import org.thoughtcrime.securesms.util.FeatureFlags;
 
 import java.util.Arrays;
@@ -12,12 +13,9 @@ import java.util.List;
 
 public final class InternalValues extends SignalStoreValues {
 
-  public static final String GV2_DO_NOT_CREATE_GV2                = "internal.gv2.do_not_create_gv2";
   public static final String GV2_FORCE_INVITES                    = "internal.gv2.force_invites";
   public static final String GV2_IGNORE_SERVER_CHANGES            = "internal.gv2.ignore_server_changes";
   public static final String GV2_IGNORE_P2P_CHANGES               = "internal.gv2.ignore_p2p_changes";
-  public static final String GV2_DISABLE_AUTOMIGRATE_INITIATION   = "internal.gv2.disable_automigrate_initiation";
-  public static final String GV2_DISABLE_AUTOMIGRATE_NOTIFICATION = "internal.gv2.disable_automigrate_notification";
   public static final String RECIPIENT_DETAILS                    = "internal.recipient_details";
   public static final String ALLOW_CENSORSHIP_SETTING             = "internal.force_censorship";
   public static final String FORCE_BUILT_IN_EMOJI                 = "internal.force_built_in_emoji";
@@ -25,10 +23,13 @@ public final class InternalValues extends SignalStoreValues {
   public static final String DELAY_RESENDS                        = "internal.delay_resends";
   public static final String CALLING_SERVER                       = "internal.calling_server";
   public static final String CALLING_AUDIO_PROCESSING_METHOD      = "internal.calling_audio_processing_method";
-  public static final String CALLING_BANDWIDTH_MODE               = "internal.calling_bandwidth_mode";
+  public static final String CALLING_DATA_MODE                    = "internal.calling_bandwidth_mode";
   public static final String CALLING_DISABLE_TELECOM              = "internal.calling_disable_telecom";
   public static final String SHAKE_TO_REPORT                      = "internal.shake_to_report";
   public static final String DISABLE_STORAGE_SERVICE              = "internal.disable_storage_service";
+  public static final String FORCE_WEBSOCKET_MODE                 = "internal.force_websocket_mode";
+  public static final String LAST_SCROLL_POSITION                 = "internal.last_scroll_position";
+  public static final String CONVERSATION_ITEM_V2                 = "internal.conversation_item_v2";
 
   InternalValues(KeyValueStore store) {
     super(store);
@@ -41,13 +42,6 @@ public final class InternalValues extends SignalStoreValues {
   @Override
   @NonNull List<String> getKeysToIncludeInBackup() {
     return Collections.emptyList();
-  }
-
-  /**
-   * Do not attempt to create GV2 groups, i.e. will force creation of GV1 or MMS groups.
-   */
-  public synchronized boolean gv2DoNotCreateGv2Groups() {
-    return FeatureFlags.internalUser() && getBoolean(GV2_DO_NOT_CREATE_GV2, false);
   }
 
   /**
@@ -114,22 +108,6 @@ public final class InternalValues extends SignalStoreValues {
   }
 
   /**
-   * Disable initiating a GV1->GV2 auto-migration. You can still recognize a group has been
-   * auto-migrated.
-   */
-  public synchronized boolean disableGv1AutoMigrateInitiation() {
-    return FeatureFlags.internalUser() && getBoolean(GV2_DISABLE_AUTOMIGRATE_INITIATION, false);
-  }
-
-  /**
-   * Disable sending a group update after an automigration. This will force other group members to
-   * have to discover the migration on their own.
-   */
-  public synchronized boolean disableGv1AutoMigrateNotification() {
-    return FeatureFlags.internalUser() && getBoolean(GV2_DISABLE_AUTOMIGRATE_NOTIFICATION, false);
-  }
-
-  /**
    * Whether or not "shake to report" is enabled.
    */
   public synchronized boolean shakeToReport() {
@@ -151,7 +129,7 @@ public final class InternalValues extends SignalStoreValues {
    * internal users cannot be left on old servers.
    */
   public synchronized @NonNull String groupCallingServer() {
-    String internalServer = FeatureFlags.internalUser() ? getString(CALLING_SERVER, null) : null;
+    String internalServer = FeatureFlags.internalUser() ? getString(CALLING_SERVER, Environment.Calling.defaultSfuUrl()) : null;
     if (internalServer != null && !Arrays.asList(BuildConfig.SIGNAL_SFU_INTERNAL_URLS).contains(internalServer)) {
       internalServer = null;
     }
@@ -172,11 +150,14 @@ public final class InternalValues extends SignalStoreValues {
   /**
    * Setting to override the default calling bandwidth mode.
    */
-  public synchronized CallManager.BandwidthMode callingBandwidthMode() {
+  public synchronized CallManager.DataMode callingDataMode() {
     if (FeatureFlags.internalUser()) {
-      return CallManager.BandwidthMode.values()[getInteger(CALLING_BANDWIDTH_MODE, CallManager.BandwidthMode.NORMAL.ordinal())];
+      int                    index = getInteger(CALLING_DATA_MODE, CallManager.DataMode.NORMAL.ordinal());
+      CallManager.DataMode[] modes = CallManager.DataMode.values();
+
+      return index < modes.length ? modes[index] : CallManager.DataMode.NORMAL;
     } else {
-      return CallManager.BandwidthMode.NORMAL;
+      return CallManager.DataMode.NORMAL;
     }
   }
 
@@ -185,9 +166,36 @@ public final class InternalValues extends SignalStoreValues {
    */
   public synchronized boolean callingDisableTelecom() {
     if (FeatureFlags.internalUser()) {
-      return getBoolean(CALLING_DISABLE_TELECOM, false);
+      return getBoolean(CALLING_DISABLE_TELECOM, true);
     } else {
-      return true;
+      return false;
     }
+  }
+
+  /**
+   * Whether or not the system is forced to be in 'websocket mode', where FCM is ignored and we use a foreground service to keep the app alive.
+   */
+  public boolean isWebsocketModeForced() {
+    if (FeatureFlags.internalUser()) {
+      return getBoolean(FORCE_WEBSOCKET_MODE, false);
+    } else {
+      return false;
+    }
+  }
+
+  public void setLastScrollPosition(int position) {
+    putInteger(LAST_SCROLL_POSITION, position);
+  }
+
+  public int getLastScrollPosition() {
+    return getInteger(LAST_SCROLL_POSITION, 0);
+  }
+
+  public void setUseConversationItemV2(boolean useConversationFragmentV2) {
+    putBoolean(CONVERSATION_ITEM_V2, useConversationFragmentV2);
+  }
+
+  public boolean useConversationItemV2() {
+    return FeatureFlags.internalUser() && getBoolean(CONVERSATION_ITEM_V2, false);
   }
 }

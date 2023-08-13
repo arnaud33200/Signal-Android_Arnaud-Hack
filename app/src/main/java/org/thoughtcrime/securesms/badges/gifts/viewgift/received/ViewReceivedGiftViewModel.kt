@@ -70,6 +70,7 @@ class ViewReceivedGiftViewModel(
 
   override fun onCleared() {
     disposables.dispose()
+    store.dispose()
   }
 
   fun setChecked(isChecked: Boolean) {
@@ -143,7 +144,7 @@ class ViewReceivedGiftViewModel(
     private val repository: ViewGiftRepository,
     private val badgeRepository: BadgeRepository
   ) : ViewModelProvider.Factory {
-    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
       return modelClass.cast(ViewReceivedGiftViewModel(sentFrom, messageId, repository, badgeRepository)) as T
     }
   }

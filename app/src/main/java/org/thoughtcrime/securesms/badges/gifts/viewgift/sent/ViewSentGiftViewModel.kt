@@ -38,6 +38,7 @@ class ViewSentGiftViewModel(
 
   override fun onCleared() {
     disposables.dispose()
+    store.dispose()
   }
 
   class Factory(
@@ -45,7 +46,7 @@ class ViewSentGiftViewModel(
     private val giftBadge: GiftBadge,
     private val repository: ViewGiftRepository
   ) : ViewModelProvider.Factory {
-    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
       return modelClass.cast(ViewSentGiftViewModel(sentFrom, giftBadge, repository)) as T
     }
   }

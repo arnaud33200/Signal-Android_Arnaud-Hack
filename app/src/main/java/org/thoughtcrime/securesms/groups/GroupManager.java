@@ -9,15 +9,17 @@ import androidx.annotation.WorkerThread;
 import org.signal.core.util.logging.Log;
 import org.signal.libsignal.zkgroup.VerificationFailedException;
 import org.signal.libsignal.zkgroup.groups.GroupMasterKey;
+import org.signal.libsignal.zkgroup.groups.GroupSecretParams;
 import org.signal.libsignal.zkgroup.groups.UuidCiphertext;
 import org.signal.storageservice.protos.groups.GroupExternalCredential;
 import org.signal.storageservice.protos.groups.local.DecryptedGroup;
 import org.signal.storageservice.protos.groups.local.DecryptedGroupJoinInfo;
-import org.thoughtcrime.securesms.database.GroupDatabase;
+import org.thoughtcrime.securesms.database.GroupTable;
 import org.thoughtcrime.securesms.database.SignalDatabase;
+import org.thoughtcrime.securesms.database.model.GroupRecord;
 import org.thoughtcrime.securesms.groups.v2.GroupInviteLinkUrl;
 import org.thoughtcrime.securesms.groups.v2.GroupLinkPassword;
-import org.thoughtcrime.securesms.keyvalue.SignalStore;
+import org.thoughtcrime.securesms.groups.v2.processing.GroupsV2StateProcessor;
 import org.thoughtcrime.securesms.profiles.AvatarHelper;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
@@ -30,6 +32,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -47,7 +50,7 @@ public final class GroupManager {
                                                        int disappearingMessagesTimer)
       throws GroupChangeBusyException, GroupChangeFailedException, IOException
   {
-    boolean          shouldAttemptToCreateV2 = !mms && !SignalStore.internalValues().gv2DoNotCreateGv2Groups();
+    boolean          shouldAttemptToCreateV2 = !mms;
     Set<RecipientId> memberIds               = getMemberIds(members);
 
     if (shouldAttemptToCreateV2) {
@@ -85,7 +88,7 @@ public final class GroupManager {
       }
     } else if (groupId.isV1()) {
       List<Recipient> members = SignalDatabase.groups()
-                                              .getGroupMembers(groupId, GroupDatabase.MemberSet.FULL_MEMBERS_EXCLUDING_SELF);
+                                              .getGroupMembers(groupId, GroupTable.MemberSet.FULL_MEMBERS_EXCLUDING_SELF);
 
       Set<RecipientId> recipientIds = getMemberIds(new HashSet<>(members));
 
@@ -115,12 +118,12 @@ public final class GroupManager {
   }
 
   @WorkerThread
-  public static void leaveGroup(@NonNull Context context, @NonNull GroupId.Push groupId)
+  public static void leaveGroup(@NonNull Context context, @NonNull GroupId.Push groupId, boolean sendToMembers)
       throws GroupChangeBusyException, GroupChangeFailedException, IOException
   {
     if (groupId.isV2()) {
       try (GroupManagerV2.GroupEditor edit = new GroupManagerV2(context).edit(groupId.requireV2())) {
-        edit.leaveGroup();
+        edit.leaveGroup(sendToMembers);
         Log.i(TAG, "Left group " + groupId);
       } catch (GroupInsufficientRightsException e) {
         Log.w(TAG, "Unexpected prevention from leaving " + groupId + " due to rights", e);
@@ -134,6 +137,8 @@ public final class GroupManager {
         throw new GroupChangeFailedException();
       }
     }
+
+    SignalDatabase.recipients().getByGroupId(groupId).ifPresent(id -> SignalDatabase.messages().deleteScheduledMessages(id));
   }
 
   @WorkerThread
@@ -141,7 +146,7 @@ public final class GroupManager {
       throws IOException, GroupChangeBusyException, GroupChangeFailedException
   {
     if (groupId.isV2()) {
-      leaveGroup(context, groupId.requireV2());
+      leaveGroup(context, groupId.requireV2(), true);
     } else {
       if (!GroupManagerV1.silentLeaveGroup(context, groupId.requireV1())) {
         throw new GroupChangeFailedException();
@@ -164,7 +169,7 @@ public final class GroupManager {
       throws GroupChangeBusyException, GroupChangeFailedException, GroupInsufficientRightsException, GroupNotAMemberException, IOException
   {
     try (GroupManagerV2.GroupEditor edit = new GroupManagerV2(context).edit(groupId.requireV2())) {
-      edit.ejectMember(recipient.requireServiceId(), false, true);
+      edit.ejectMember(recipient.requireAci(), false, true, true);
       Log.i(TAG, "Member removed from group " + groupId);
     }
   }
@@ -176,27 +181,52 @@ public final class GroupManager {
    *                                  processing deny messages.
    */
   @WorkerThread
-  public static void updateGroupFromServer(@NonNull Context context,
-                                           @NonNull ServiceId authServiceId,
-                                           @NonNull GroupMasterKey groupMasterKey,
-                                           int revision,
-                                           long timestamp,
-                                           @Nullable byte[] signedGroupChange)
+  public static GroupsV2StateProcessor.GroupUpdateResult updateGroupFromServer(@NonNull Context context,
+                                                                               @NonNull GroupMasterKey groupMasterKey,
+                                                                               int revision,
+                                                                               long timestamp,
+                                                                               @Nullable byte[] signedGroupChange)
       throws GroupChangeBusyException, IOException, GroupNotAMemberException
   {
     try (GroupManagerV2.GroupUpdater updater = new GroupManagerV2(context).updater(groupMasterKey)) {
-      updater.updateLocalToServerRevision(authServiceId, revision, timestamp, signedGroupChange);
+      return updater.updateLocalToServerRevision(revision, timestamp, null, signedGroupChange);
+    }
+  }
+
+  @WorkerThread
+  public static GroupsV2StateProcessor.GroupUpdateResult updateGroupFromServer(@NonNull Context context,
+                                                                               @NonNull GroupMasterKey groupMasterKey,
+                                                                               @NonNull Optional<GroupRecord> groupRecord,
+                                                                               @Nullable GroupSecretParams groupSecretParams,
+                                                                               int revision,
+                                                                               long timestamp,
+                                                                               @Nullable byte[] signedGroupChange)
+      throws GroupChangeBusyException, IOException, GroupNotAMemberException
+  {
+    try (GroupManagerV2.GroupUpdater updater = new GroupManagerV2(context).updater(groupMasterKey)) {
+      return updater.updateLocalToServerRevision(revision, timestamp, groupRecord, groupSecretParams, signedGroupChange);
+    }
+  }
+
+  @WorkerThread
+  public static void forceSanityUpdateFromServer(@NonNull Context context,
+                                                 @NonNull GroupMasterKey groupMasterKey,
+                                                 long timestamp)
+      throws GroupChangeBusyException, IOException, GroupNotAMemberException
+  {
+    try (GroupManagerV2.GroupUpdater updater = new GroupManagerV2(context).updater(groupMasterKey)) {
+      updater.forceSanityUpdateFromServer(timestamp);
     }
   }
 
   @WorkerThread
   public static V2GroupServerStatus v2GroupStatus(@NonNull Context context,
-                                                  @NonNull ServiceId authServiceserviceId,
+                                                  @NonNull ServiceId authServiceId,
                                                   @NonNull GroupMasterKey groupMasterKey)
       throws IOException
   {
     try {
-      new GroupManagerV2(context).groupServerQuery(authServiceserviceId, groupMasterKey);
+      new GroupManagerV2(context).groupServerQuery(authServiceId, groupMasterKey);
       return V2GroupServerStatus.FULL_OR_PENDING_MEMBER;
     } catch (GroupNotAMemberException e) {
       return V2GroupServerStatus.NOT_A_MEMBER;
@@ -286,16 +316,16 @@ public final class GroupManager {
                          @NonNull RecipientId recipientId)
       throws GroupChangeBusyException, IOException, GroupChangeFailedException, GroupNotAMemberException, GroupInsufficientRightsException
   {
-    GroupDatabase.V2GroupProperties groupProperties = SignalDatabase.groups().requireGroup(groupId).requireV2GroupProperties();
-    Recipient                       recipient       = Recipient.resolved(recipientId);
+    GroupTable.V2GroupProperties groupProperties = SignalDatabase.groups().requireGroup(groupId).requireV2GroupProperties();
+    Recipient                    recipient       = Recipient.resolved(recipientId);
 
-    if (groupProperties.getBannedMembers().contains(recipient.requireServiceId().uuid())) {
+    if (groupProperties.getBannedMembers().contains(recipient.requireServiceId())) {
       Log.i(TAG, "Attempt to ban already banned recipient: " + recipientId);
       return;
     }
 
     try (GroupManagerV2.GroupEditor editor = new GroupManagerV2(context).edit(groupId.requireV2())) {
-      editor.ban(recipient.requireServiceId().uuid());
+      editor.ban(recipient.requireServiceId());
     }
   }
 
@@ -306,7 +336,7 @@ public final class GroupManager {
       throws GroupChangeBusyException, IOException, GroupChangeFailedException, GroupNotAMemberException, GroupInsufficientRightsException
   {
     try (GroupManagerV2.GroupEditor editor = new GroupManagerV2(context).edit(groupId.requireV2())) {
-      editor.unban(Collections.singleton(Recipient.resolved(recipientId).requireServiceId().uuid()));
+      editor.unban(Collections.singleton(Recipient.resolved(recipientId).requireServiceId()));
     }
   }
 
@@ -393,14 +423,14 @@ public final class GroupManager {
       throws GroupChangeFailedException, GroupInsufficientRightsException, IOException, GroupNotAMemberException, GroupChangeBusyException, MembershipNotSuitableForV2Exception
   {
     if (groupId.isV2()) {
-      GroupDatabase.GroupRecord groupRecord  = SignalDatabase.groups().requireGroup(groupId);
+      GroupRecord groupRecord = SignalDatabase.groups().requireGroup(groupId);
 
       try (GroupManagerV2.GroupEditor editor = new GroupManagerV2(context).edit(groupId.requireV2())) {
         return editor.addMembers(newMembers, groupRecord.requireV2GroupProperties().getBannedMembers());
       }
     } else {
-      GroupDatabase.GroupRecord groupRecord  = SignalDatabase.groups().requireGroup(groupId);
-      List<RecipientId>         members      = groupRecord.getMembers();
+      GroupRecord       groupRecord = SignalDatabase.groups().requireGroup(groupId);
+      List<RecipientId> members     = groupRecord.getMembers();
       byte[]                    avatar       = groupRecord.hasAvatar() ? AvatarHelper.getAvatarBytes(context, groupRecord.getRecipientId()) : null;
       Set<RecipientId>          recipientIds = new HashSet<>(members);
       int                       originalSize = recipientIds.size();

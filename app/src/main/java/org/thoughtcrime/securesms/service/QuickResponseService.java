@@ -8,14 +8,13 @@ import android.widget.Toast;
 
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.R;
+import org.thoughtcrime.securesms.mms.OutgoingMessage;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.sms.MessageSender;
-import org.thoughtcrime.securesms.sms.OutgoingTextMessage;
 import org.thoughtcrime.securesms.util.Rfc5724Uri;
 
 import java.net.URISyntaxException;
 import java.net.URLDecoder;
-import java.util.concurrent.TimeUnit;
 
 public class QuickResponseService extends IntentService {
 
@@ -47,12 +46,10 @@ public class QuickResponseService extends IntentService {
         number = URLDecoder.decode(number);
       }
 
-      Recipient recipient      = Recipient.external(this, number);
-      int       subscriptionId = recipient.getDefaultSubscriptionId().orElse(-1);
-      long      expiresIn      = TimeUnit.SECONDS.toMillis(recipient.getExpiresInSeconds());
+      Recipient recipient = Recipient.external(this, number);
 
       if (!TextUtils.isEmpty(content)) {
-        MessageSender.send(this, new OutgoingTextMessage(recipient, content, expiresIn, subscriptionId), -1, false, null, null);
+        MessageSender.send(this, OutgoingMessage.sms(recipient, content), -1, MessageSender.SendType.SIGNAL, null, null);
       }
     } catch (URISyntaxException e) {
       Toast.makeText(this, R.string.QuickResponseService_problem_sending_message, Toast.LENGTH_LONG).show();
